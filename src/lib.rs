@@ -4,11 +4,13 @@ mod lmdb;
 
 use crate::error::Error;
 use crate::keys::{
-    key_doc, key_doc_end, key_doc_start, key_meta, key_oid, key_state_vector, key_update, Key, OID,
+    doc_meta_name, doc_oid_name, key_doc, key_doc_end, key_doc_start, key_meta, key_meta_end,
+    key_meta_start, key_oid, key_state_vector, key_update, Key, KEYSPACE_DOC, KEYSPACE_OID, OID,
     V1,
 };
 use crate::lmdb::{
-    delete_updates, get_oid, get_or_create_oid, load_doc, DatabaseExt, OptionalNotFound,
+    delete_updates, flush_doc, get_oid, get_or_create_oid, insert_inner_v1, load_doc, DatabaseExt,
+    OptionalNotFound, OwnedCursorRange,
 };
 use lib0::any::Any;
 use lmdb_rs::core::{CursorIterator, DbCreate, MdbResult};
@@ -47,23 +49,9 @@ impl LmdbPersistence {
         let db_txn = self.env.new_transaction()?;
         let db = db_txn.bind(&self.db_handle);
         if let Some(oid) = get_oid(&db, doc_name.as_ref())? {
-            let doc = Doc::new();
-            let found = load_doc(&db, oid, &mut doc.transact_mut())?;
-            if found & !(1 << 31) != 0 {
-                // loaded doc was generated from updates
-                let txn = doc.transact();
-                let doc_state = txn.encode_state_as_update_v1(&StateVector::default());
-                let state_vec = txn.state_vector().encode_v1();
-                drop(txn);
-
-                Self::insert_inner_v1(&db, oid, &doc_state, &state_vec)?;
-                delete_updates(&db, oid)?;
-
-                db_txn.commit()?;
-                Ok(Some(doc))
-            } else {
-                Ok(None)
-            }
+            let doc = flush_doc(&db, oid)?;
+            db_txn.commit()?;
+            Ok(doc)
         } else {
             Ok(None)
         }
@@ -89,21 +77,8 @@ impl LmdbPersistence {
         let db_txn = self.env.new_transaction()?;
         let db = db_txn.bind(&self.db_handle);
         let oid = get_or_create_oid(&db, doc_name)?;
-        Self::insert_inner_v1(&db, oid, doc_state_v1, doc_sv_v1)?;
+        insert_inner_v1(&db, oid, doc_state_v1, doc_sv_v1)?;
         db_txn.commit()?;
-        Ok(())
-    }
-
-    fn insert_inner_v1(
-        db: &Database,
-        oid: OID,
-        doc_state_v1: &[u8],
-        doc_sv_v1: &[u8],
-    ) -> Result<(), Error> {
-        let key_doc = key_doc(oid);
-        let key_sv = key_state_vector(oid);
-        db.upsert(key_doc.as_ref(), &doc_state_v1)?;
-        db.upsert(key_sv.as_ref(), &doc_sv_v1)?;
         Ok(())
     }
 
@@ -146,7 +121,10 @@ impl LmdbPersistence {
             drop(db);
             drop(db_txn);
             if has_pending_updates {
-                let doc = self.flush_doc(doc_name)?;
+                let db_txn = self.env.new_transaction()?;
+                let db = db_txn.bind(&self.db_handle);
+                let doc = flush_doc(&db, oid)?;
+                db_txn.commit()?;
                 if let Some(doc) = doc {
                     let sv = doc.transact().state_vector();
                     Ok(Some(sv))
@@ -214,9 +192,17 @@ impl LmdbPersistence {
             let oid = OID::from_be_bytes(oid);
             let start = key_doc_start(oid);
             let end = key_doc_end(oid);
+            println!(
+                "cleanup entries between {:x?}..{:x?}",
+                start.as_ref(),
+                end.as_ref()
+            );
 
             for v in db.keyrange(&start, &end)? {
                 let key: &[u8] = v.get_key();
+                if key > end.as_ref() {
+                    break; //TODO: for some reason key range doesn't always work
+                }
                 db.del(&key)?;
             }
 
@@ -275,15 +261,11 @@ impl LmdbPersistence {
     }
 
     pub fn iter_docs(&self) -> Result<DocsNameIter, Error> {
-        DocsNameIter::new(&self.env, &self.db_handle)
+        DocsNameIter::new(&self)
     }
 
-    pub fn iter_state_vectors(&self) -> Result<StateVectorIter, Error> {
-        StateVectorIter::new(&self.env, &self.db_handle)
-    }
-
-    pub fn iter_metadata(&self) -> MetadataIter {
-        MetadataIter::new(&self.env, &self.db_handle)
+    pub fn iter_meta<K: AsRef<[u8]> + ?Sized>(&self, doc_name: &K) -> Result<MetadataIter, Error> {
+        MetadataIter::new(&self, doc_name.as_ref())
     }
 }
 
@@ -300,16 +282,16 @@ impl Default for Options {
     }
 }
 
-#[derive(Debug)]
-pub struct DocsNameIter<'a> {
-    txn: ReadonlyTransaction<'a>,
-    db: Database<'a>,
-    cursor: CursorIterator<'a, CursorKeyRangeIter<'a>>,
-}
+pub struct DocsNameIter<'a>(OwnedCursorRange<'a>);
 
 impl<'a> DocsNameIter<'a> {
-    fn new(env: &'a Environment, db_handle: &'a DbHandle) -> Result<Self, Error> {
-        todo!()
+    fn new(store: &'a LmdbPersistence) -> Result<Self, Error> {
+        let txn: ReadonlyTransaction<'a> = store.env.get_reader()?;
+        let db: Database<'a> = unsafe { std::mem::transmute(txn.bind(&store.db_handle)) };
+        let start = Key::from_const([V1, KEYSPACE_OID]);
+        let end = Key::from_const([V1, KEYSPACE_DOC]);
+        let cursor = OwnedCursorRange::new(txn, db, start, end)?;
+        Ok(DocsNameIter(cursor))
     }
 }
 
@@ -317,46 +299,25 @@ impl<'a> Iterator for DocsNameIter<'a> {
     type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        let (key, _) = self.0.next()?;
+        Some(doc_oid_name(key))
     }
 }
 
-#[derive(Debug)]
-pub struct StateVectorIter<'a>(CursorIterator<'a, CursorKeyRangeIter<'a>>);
-
-impl<'a> StateVectorIter<'a> {
-    fn new(env: &'a Environment, db_handle: &'a DbHandle) -> Result<Self, Error> {
-        //let txn = env.get_reader()?;
-        //let db = txn.bind(db_handle);
-        //let start = STATE_VECTOR_KEY_RANGE_START.as_ref();
-        //let end = STATE_VECTOR_KEY_RANGE_END.as_ref();
-        //let iter = db.keyrange(&start, &end)?;
-        //Ok(StateVectorIter(iter))
-        todo!()
-    }
-}
-
-impl<'db> Iterator for StateVectorIter<'db> {
-    type Item = Result<(&'db [u8], StateVector), Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let value = self.0.next()?;
-        let key: &[u8] = value.get_key(); // key pattern: 00{name:n}0
-        let value: &[u8] = value.get_value();
-        let doc_name = &key[2..(key.len() - 1)];
-        match StateVector::decode_v1(value) {
-            Ok(sv) => Some(Ok((doc_name, sv))),
-            Err(err) => Some(Err(err.into())),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct MetadataIter<'a>(CursorIterator<'a, CursorKeyRangeIter<'a>>);
+pub struct MetadataIter<'a>(Option<OwnedCursorRange<'a>>);
 
 impl<'a> MetadataIter<'a> {
-    fn new(env: &'a Environment, db_handle: &'a DbHandle) -> MetadataIter<'a> {
-        todo!()
+    fn new<'b>(store: &'a LmdbPersistence, doc_name: &'b [u8]) -> Result<MetadataIter<'a>, Error> {
+        let txn: ReadonlyTransaction<'a> = store.env.get_reader()?;
+        let db: Database<'a> = unsafe { std::mem::transmute(txn.bind(&store.db_handle)) };
+        if let Some(oid) = get_oid(&db, doc_name)? {
+            let start = key_meta_start(oid);
+            let end = key_meta_end(oid);
+            let cursor = OwnedCursorRange::new(txn, db, start, end)?;
+            Ok(MetadataIter(Some(cursor)))
+        } else {
+            Ok(MetadataIter(None))
+        }
     }
 }
 
@@ -364,7 +325,9 @@ impl<'a> Iterator for MetadataIter<'a> {
     type Item = (&'a [u8], &'a [u8]);
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        let cursor = self.0.as_mut()?;
+        let (key, value) = cursor.next()?;
+        Some((doc_meta_name(key), value))
     }
 }
 
@@ -372,9 +335,10 @@ impl<'a> Iterator for MetadataIter<'a> {
 mod test {
     use crate::{LmdbPersistence, Options};
     use lmdb_rs::Environment;
+    use std::collections::HashMap;
     use std::io;
     use std::sync::{Arc, Mutex};
-    use yrs::{Doc, GetString, ReadTxn, Text, Transact};
+    use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Transact};
 
     struct Cleaner(&'static str);
 
@@ -631,5 +595,81 @@ mod test {
         assert_eq!(prev.as_deref(), Some("value2".as_bytes()));
         let value = db.get_meta(DOC_NAME, "key").unwrap();
         assert!(value.is_none());
+    }
+
+    #[test]
+    fn doc_meta_iter() {
+        let cleaner = Cleaner::new("test-doc_meta_iter");
+        let env = init_env(cleaner.dir());
+        let db = LmdbPersistence::new(env).unwrap();
+
+        db.insert_meta("A", "key1", "value1".as_bytes()).unwrap();
+        db.insert_meta("B", "key2", "value2".as_bytes()).unwrap();
+        db.insert_meta("B", "key3", "value3".as_bytes()).unwrap();
+        db.insert_meta("C", "key4", "value1".as_bytes()).unwrap();
+
+        let mut i = db.iter_meta("B").unwrap();
+        assert_eq!(i.next(), Some(("key2".as_bytes(), "value2".as_bytes())));
+        assert_eq!(i.next(), Some(("key3".as_bytes(), "value3".as_bytes())));
+        assert!(i.next().is_none());
+    }
+
+    #[test]
+    fn doc_iter() {
+        let cleaner = Cleaner::new("test-doc_iter");
+        let env = init_env(cleaner.dir());
+        let db = Arc::new(Mutex::new(LmdbPersistence::new(env).unwrap()));
+
+        // insert metadata
+        {
+            let h = db.lock().unwrap();
+            h.insert_meta("A", "key1", "value1".as_bytes()).unwrap();
+        }
+
+        // insert full doc state
+        {
+            let doc = Doc::new();
+            let text = doc.get_or_insert_text("text");
+            let mut txn = doc.transact_mut();
+            text.push(&mut txn, "hello world");
+            let h = db.lock().unwrap();
+            h.insert_doc("B", &txn).unwrap();
+        }
+
+        // insert update
+        {
+            let doc = Doc::new();
+            let db_copy = db.clone();
+            let sub = doc.observe_update_v1(move |txn, u| {
+                let h = db_copy.lock().unwrap();
+                h.push_update("C", &u.update).unwrap();
+            });
+            let text = doc.get_or_insert_text("text");
+            let mut txn = doc.transact_mut();
+            text.push(&mut txn, "hello world");
+        }
+
+        {
+            let h = db.lock().unwrap();
+            let mut i = h.iter_docs().unwrap();
+            assert_eq!(i.next(), Some("A".as_bytes()));
+            assert_eq!(i.next(), Some("B".as_bytes()));
+            assert_eq!(i.next(), Some("C".as_bytes()));
+            assert!(i.next().is_none());
+        }
+
+        // clear doc
+        {
+            let h = db.lock().unwrap();
+            h.clear_doc("B").unwrap();
+        }
+
+        {
+            let h = db.lock().unwrap();
+            let mut i = h.iter_docs().unwrap();
+            assert_eq!(i.next(), Some("A".as_bytes()));
+            assert_eq!(i.next(), Some("C".as_bytes()));
+            assert!(i.next().is_none());
+        }
     }
 }

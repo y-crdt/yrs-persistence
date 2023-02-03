@@ -71,12 +71,35 @@ pub fn key_update(oid: OID, clock: u32) -> Key<12> {
     Key(v)
 }
 
+pub fn doc_meta_name(key: &[u8]) -> &[u8] {
+    &key[7..(key.len() - 1)]
+}
+
+pub fn doc_oid_name(key: &[u8]) -> &[u8] {
+    &key[2..(key.len() - 1)]
+}
+
 pub fn key_meta(oid: OID, name: &[u8]) -> Key<20> {
     let mut v: SmallVec<[u8; 20]> = smallvec![V1, KEYSPACE_DOC];
     v.write_all(&oid.to_be_bytes()).unwrap();
     v.push(SUB_META);
     v.write_all(&name).unwrap();
     v.push(TERMINATOR);
+    Key(v)
+}
+
+pub fn key_meta_start(oid: OID) -> Key<8> {
+    let mut v: SmallVec<[u8; 8]> = smallvec![V1, KEYSPACE_DOC];
+    v.write_all(&oid.to_be_bytes()).unwrap();
+    v.push(SUB_META);
+    v.push(TERMINATOR);
+    Key(v)
+}
+
+pub fn key_meta_end(oid: OID) -> Key<8> {
+    let mut v: SmallVec<[u8; 8]> = smallvec![V1, KEYSPACE_DOC];
+    v.write_all(&oid.to_be_bytes()).unwrap();
+    v.push(SUB_META + 1);
     Key(v)
 }
 
@@ -101,6 +124,12 @@ impl<const N: usize> AsMut<[u8]> for Key<N> {
     #[inline]
     fn as_mut(&mut self) -> &mut [u8] {
         self.0.as_mut()
+    }
+}
+
+impl<const N: usize> Into<Vec<u8>> for Key<N> {
+    fn into(self) -> Vec<u8> {
+        self.0.to_vec()
     }
 }
 

@@ -1,9 +1,10 @@
 use crate::error::Error;
-use crate::keys::{key_doc, key_oid, key_update, Key, OID};
-use lmdb_rs::core::{MdbResult, PageFull};
-use lmdb_rs::{Database, MdbError};
+use crate::keys::{key_doc, key_oid, key_state_vector, key_update, Key, OID};
+use lmdb_rs::core::{CursorIterator, MdbResult, PageFull};
+use lmdb_rs::{CursorKeyRangeIter, Database, DbHandle, Environment, MdbError, ReadonlyTransaction};
 use yrs::updates::decoder::Decode;
-use yrs::{TransactionMut, Update};
+use yrs::updates::encoder::Encode;
+use yrs::{Doc, ReadTxn, StateVector, Transact, TransactionMut, Update};
 
 pub(crate) trait OptionalNotFound {
     type Return;
@@ -46,6 +47,48 @@ impl<'a> DatabaseExt for Database<'a> {
             self.del(&key)?;
         }
         Ok(prev)
+    }
+}
+
+pub(crate) struct OwnedCursorRange<'a> {
+    txn: ReadonlyTransaction<'a>,
+    db: Database<'a>,
+    cursor: CursorIterator<'a, CursorKeyRangeIter<'a>>,
+    start: Vec<u8>,
+    end: Vec<u8>,
+}
+
+impl<'a> OwnedCursorRange<'a> {
+    pub(crate) fn new<const N: usize>(
+        txn: ReadonlyTransaction<'a>,
+        db: Database<'a>,
+        start: Key<N>,
+        end: Key<N>,
+    ) -> Result<Self, Error> {
+        let start = start.into();
+        let end = end.into();
+        let cursor = unsafe { std::mem::transmute(db.keyrange(&start, &end)?) };
+
+        Ok(OwnedCursorRange {
+            txn,
+            db,
+            cursor,
+            start,
+            end,
+        })
+    }
+
+    pub(crate) fn db(&self) -> &Database {
+        &self.db
+    }
+}
+
+impl<'a> Iterator for OwnedCursorRange<'a> {
+    type Item = (&'a [u8], &'a [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let v = self.cursor.next()?;
+        Some(v.get())
     }
 }
 
@@ -135,4 +178,35 @@ pub(crate) fn delete_updates(db: &Database, oid: OID) -> Result<usize, Error> {
         }
     }
     Ok(count)
+}
+
+pub(crate) fn flush_doc(db: &Database, oid: OID) -> Result<Option<Doc>, Error> {
+    let doc = Doc::new();
+    let found = load_doc(&db, oid, &mut doc.transact_mut())?;
+    if found & !(1 << 31) != 0 {
+        // loaded doc was generated from updates
+        let txn = doc.transact();
+        let doc_state = txn.encode_state_as_update_v1(&StateVector::default());
+        let state_vec = txn.state_vector().encode_v1();
+        drop(txn);
+
+        insert_inner_v1(&db, oid, &doc_state, &state_vec)?;
+        delete_updates(&db, oid)?;
+        Ok(Some(doc))
+    } else {
+        Ok(None)
+    }
+}
+
+pub(crate) fn insert_inner_v1(
+    db: &Database,
+    oid: OID,
+    doc_state_v1: &[u8],
+    doc_sv_v1: &[u8],
+) -> Result<(), Error> {
+    let key_doc = key_doc(oid);
+    let key_sv = key_state_vector(oid);
+    db.upsert(key_doc.as_ref(), &doc_state_v1)?;
+    db.upsert(key_sv.as_ref(), &doc_sv_v1)?;
+    Ok(())
 }
