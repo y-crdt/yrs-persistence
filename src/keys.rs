@@ -1,8 +1,8 @@
 use lmdb_rs::{MdbValue, ToMdbValue};
 use smallvec::{smallvec, SmallVec};
 use std::ffi::c_void;
-use std::io::{Result, Write};
-use std::mem::size_of;
+use std::io::Write;
+use std::ops::Deref;
 
 pub const V1: u8 = 0;
 
@@ -110,6 +110,14 @@ pub struct Key<const N: usize>(SmallVec<[u8; N]>);
 impl<const N: usize> Key<N> {
     pub const fn from_const(src: [u8; N]) -> Self {
         Key(SmallVec::from_const(src))
+    }
+}
+
+impl<const N: usize> Deref for Key<N> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
     }
 }
 
