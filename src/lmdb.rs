@@ -1,13 +1,8 @@
 use crate::error::Error;
-use crate::keys::{key_doc, key_oid, key_state_vector, key_update, Key, OID};
+use crate::keys::Key;
 use crate::{DocStore, KVEntry, KVStore};
-use lmdb_rs::core::{CursorIterator, MdbResult, PageFull};
-use lmdb_rs::{
-    CursorKeyRangeIter, CursorValue, Database, DbHandle, Environment, MdbError, ReadonlyTransaction,
-};
-use yrs::updates::decoder::Decode;
-use yrs::updates::encoder::Encode;
-use yrs::{Doc, ReadTxn, StateVector, Transact, TransactionMut, Update};
+use lmdb_rs::core::{CursorIterator, MdbResult};
+use lmdb_rs::{CursorKeyRangeIter, CursorValue, Database, MdbError, ReadonlyTransaction};
 
 pub(crate) trait OptionalNotFound {
     type Return;
@@ -36,24 +31,24 @@ impl<'a> KVStore<'a> for Database<'a> {
     type Error = MdbError;
     type Cursor = LmdbRange<'a>;
     type Entry = LmdbEntry<'a>;
+    type Return = &'a [u8];
 
-    fn get(&self, key: &[u8]) -> Result<Option<&'a [u8]>, Self::Error> {
+    fn get(&self, key: &[u8]) -> Result<Option<Self::Return>, Self::Error> {
         let value = self.get(&key).optional()?;
         Ok(value)
     }
 
-    fn upsert(&self, key: &[u8], value: &[u8]) -> Result<Option<&'a [u8]>, Self::Error> {
-        let prev = self.remove(key)?;
-        self.insert(&key, &value)?;
-        Ok(prev)
+    fn upsert(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+        self.set(&key, &value)?;
+        Ok(())
     }
 
-    fn remove(&self, key: &[u8]) -> Result<Option<&'a [u8]>, Self::Error> {
+    fn remove(&self, key: &[u8]) -> Result<(), Self::Error> {
         let prev: Option<&[u8]> = self.get(&key).optional()?;
         if prev.is_some() {
             self.del(&key)?;
         }
-        Ok(prev)
+        Ok(())
     }
 
     fn remove_range(&self, from: &[u8], to: &[u8]) -> Result<(), Self::Error> {
@@ -85,23 +80,20 @@ impl<'a> Iterator for LmdbRange<'a> {
     type Item = LmdbEntry<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let n = self.cursor.next()?;
-        if n.get_key::<&[u8]>() > &self.to {
-            None
-        } else {
-            Some(LmdbEntry(n))
-        }
+        let value = self.cursor.next()?;
+        Some(LmdbEntry(value))
     }
 }
 
 pub struct LmdbEntry<'a>(CursorValue<'a>);
 
-impl<'a> KVEntry<'a> for LmdbEntry<'a> {
-    fn get_key(&self) -> &'a [u8] {
+impl<'a> LmdbEntry<'a> {}
+
+impl<'a> KVEntry for LmdbEntry<'a> {
+    fn key(&self) -> &[u8] {
         self.0.get_key()
     }
-
-    fn get_value(&self) -> &'a [u8] {
+    fn value(&self) -> &[u8] {
         self.0.get_value()
     }
 }
@@ -299,7 +291,7 @@ mod test {
 
             let env = env.clone();
             let h = h.clone();
-            let _sub = doc.observe_update_v1(move |txn, u| {
+            let _sub = doc.observe_update_v1(move |_, u| {
                 let db_txn = env.new_transaction().unwrap();
                 let db = db_txn.bind(&h);
                 db.push_update(DOC_NAME, &u.update).unwrap();
@@ -347,12 +339,12 @@ mod test {
         let h = Arc::new(h);
 
         // store document updates
-        let expected = {
+        {
             let doc = Doc::new();
             let text = doc.get_or_insert_text("text");
             let env = env.clone();
             let h = h.clone();
-            let _sub = doc.observe_update_v1(move |txn, u| {
+            let _sub = doc.observe_update_v1(move |_, u| {
                 let db_txn = env.new_transaction().unwrap();
                 let db = db_txn.bind(&h);
                 db.push_update(DOC_NAME, &u.update).unwrap();
@@ -389,7 +381,7 @@ mod test {
 
             let env = env.clone();
             let h = h.clone();
-            let _sub = doc.observe_update_v1(move |txn, u| {
+            let _sub = doc.observe_update_v1(move |_, u| {
                 let db_txn = env.new_transaction().unwrap();
                 let db = db_txn.bind(&h);
                 db.push_update(DOC_NAME, &u.update).unwrap();
@@ -451,25 +443,24 @@ mod test {
 
         let db_txn = env.new_transaction().unwrap();
         let db = db_txn.bind(&h);
-        let value = db.get_meta(DOC_NAME, "key".as_bytes()).unwrap();
+        let value = db.get_meta(DOC_NAME, "key").unwrap();
         assert!(value.is_none());
-        let prev = db
-            .insert_meta(DOC_NAME, "key", "value1".as_bytes())
+        db.insert_meta(DOC_NAME, "key", "value1".as_bytes())
             .unwrap();
         db_txn.commit().unwrap();
-        assert!(prev.is_none());
 
         let db_txn = env.new_transaction().unwrap();
         let db = db_txn.bind(&h);
-        let prev = db
-            .insert_meta(DOC_NAME, "key", "value2".as_bytes())
+        let prev = db.get_meta(DOC_NAME, "key").unwrap().map(Vec::from);
+        db.insert_meta(DOC_NAME, "key", "value2".as_bytes())
             .unwrap();
         db_txn.commit().unwrap();
         assert_eq!(prev.as_deref(), Some("value1".as_bytes()));
 
         let db_txn = env.new_transaction().unwrap();
         let db = db_txn.bind(&h);
-        let prev = db.remove_meta(DOC_NAME, "key").unwrap();
+        let prev = db.get_meta(DOC_NAME, "key").unwrap().map(Vec::from);
+        db.remove_meta(DOC_NAME, "key").unwrap();
         assert_eq!(prev.as_deref(), Some("value2".as_bytes()));
         let value = db.get_meta(DOC_NAME, "key").unwrap();
         assert!(value.is_none());
@@ -483,14 +474,14 @@ mod test {
         let db_txn = env.new_transaction().unwrap();
         let db = db_txn.bind(&h);
 
-        db.insert_meta("A", "key1", "value1".as_bytes()).unwrap();
-        db.insert_meta("B", "key2", "value2".as_bytes()).unwrap();
-        db.insert_meta("B", "key3", "value3".as_bytes()).unwrap();
-        db.insert_meta("C", "key4", "value1".as_bytes()).unwrap();
+        db.insert_meta("A", "key1", [1].as_ref()).unwrap();
+        db.insert_meta("B", "key2", [2].as_ref()).unwrap();
+        db.insert_meta("B", "key3", [3].as_ref()).unwrap();
+        db.insert_meta("C", "key4", [4].as_ref()).unwrap();
 
         let mut i = db.iter_meta("B").unwrap();
-        assert_eq!(i.next(), Some(("key2".as_bytes(), "value2".as_bytes())));
-        assert_eq!(i.next(), Some(("key3".as_bytes(), "value3".as_bytes())));
+        assert_eq!(i.next(), Some(("key2".as_bytes().into(), [2].into())));
+        assert_eq!(i.next(), Some(("key3".as_bytes().into(), [3].into())));
         assert!(i.next().is_none());
     }
 
@@ -506,7 +497,7 @@ mod test {
         {
             let db_txn = env.new_transaction().unwrap();
             let db = db_txn.bind(&h);
-            db.insert_meta("A", "key1", "value1".as_bytes()).unwrap();
+            db.insert_meta("A", "key1", [1].as_ref()).unwrap();
             db_txn.commit().unwrap();
         }
 
@@ -527,7 +518,7 @@ mod test {
             let doc = Doc::new();
             let env = env.clone();
             let h = h.clone();
-            let sub = doc.observe_update_v1(move |txn, u| {
+            let _sub = doc.observe_update_v1(move |_, u| {
                 let db_txn = env.new_transaction().unwrap();
                 let db = db_txn.bind(&h);
                 db.push_update("C", &u.update).unwrap();
@@ -542,9 +533,9 @@ mod test {
             let db_txn = env.get_reader().unwrap();
             let db = db_txn.bind(&h);
             let mut i = db.iter_docs().unwrap();
-            assert_eq!(i.next(), Some("A".as_bytes()));
-            assert_eq!(i.next(), Some("B".as_bytes()));
-            assert_eq!(i.next(), Some("C".as_bytes()));
+            assert_eq!(i.next(), Some("A".as_bytes().into()));
+            assert_eq!(i.next(), Some("B".as_bytes().into()));
+            assert_eq!(i.next(), Some("C".as_bytes().into()));
             assert!(i.next().is_none());
         }
 
@@ -560,8 +551,8 @@ mod test {
             let db_txn = env.get_reader().unwrap();
             let db = db_txn.bind(&h);
             let mut i = db.iter_docs().unwrap();
-            assert_eq!(i.next(), Some("A".as_bytes()));
-            assert_eq!(i.next(), Some("C".as_bytes()));
+            assert_eq!(i.next(), Some("A".as_bytes().into()));
+            assert_eq!(i.next(), Some("C".as_bytes().into()));
             assert!(i.next().is_none());
         }
     }
