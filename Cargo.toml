@@ -12,3 +12,6 @@ thiserror = "1.0"
 smallvec = { version="1.10", features=["write","union","const_generics","const_new"] }
 lmdb-rs = { version = "0.7" }
 rocksdb = { version = "0.19" }
+
+[dev-dependencies]
+criterion = "0.4"

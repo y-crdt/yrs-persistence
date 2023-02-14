@@ -52,12 +52,14 @@ impl<'a> KVStore<'a> for Database<'a> {
     }
 
     fn remove_range(&self, from: &[u8], to: &[u8]) -> Result<(), Self::Error> {
-        for v in self.keyrange(&from, &to)? {
-            let key: &[u8] = v.get_key();
-            if key > to {
-                break; //TODO: for some reason key range doesn't always work
+        let mut c = self.new_cursor()?;
+        if c.to_gte_key(&from).optional()?.is_some() {
+            while c.get_key::<&[u8]>()? <= to {
+                c.del()?;
+                if c.to_next_key().optional()?.is_none() {
+                    break;
+                }
             }
-            self.del(&key)?;
         }
         Ok(())
     }

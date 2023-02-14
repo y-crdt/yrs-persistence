@@ -8,7 +8,6 @@ use crate::keys::{
     doc_oid_name, key_doc, key_doc_end, key_doc_start, key_meta, key_meta_end, key_meta_start,
     key_oid, key_state_vector, key_update, Key, KEYSPACE_DOC, KEYSPACE_OID, OID, V1,
 };
-use std::mem::size_of;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, TransactionMut, Update};
@@ -83,8 +82,16 @@ where
     }
 
     fn flush_doc<K: AsRef<[u8]> + ?Sized>(&self, name: &K) -> Result<Option<Doc>, Error> {
+        self.flush_doc_with(name, yrs::Options::default())
+    }
+
+    fn flush_doc_with<K: AsRef<[u8]> + ?Sized>(
+        &self,
+        name: &K,
+        options: yrs::Options,
+    ) -> Result<Option<Doc>, Error> {
         if let Some(oid) = get_oid(self, name.as_ref())? {
-            let doc = flush_doc(self, oid)?;
+            let doc = flush_doc(self, oid, options)?;
             Ok(doc)
         } else {
             Ok(None)
@@ -114,7 +121,7 @@ where
         }
     }
 
-    fn push_update<K: AsRef<[u8]> + ?Sized>(&self, name: &K, update: &[u8]) -> Result<(), Error> {
+    fn push_update<K: AsRef<[u8]> + ?Sized>(&self, name: &K, update: &[u8]) -> Result<u32, Error> {
         let oid = get_or_create_oid(self, name.as_ref())?;
         let last_clock = {
             let start = key_update(oid, 0);
@@ -129,9 +136,10 @@ where
                 0
             }
         };
-        let update_key = key_update(oid, last_clock + 1);
+        let clock = last_clock + 1;
+        let update_key = key_update(oid, clock);
         self.upsert(&update_key, &update)?;
-        Ok(())
+        Ok(clock)
     }
 
     fn get_diff<K: AsRef<[u8]> + ?Sized>(
@@ -313,7 +321,7 @@ where
 
 fn delete_updates<'a, DB: DocStore<'a> + ?Sized>(db: &DB, oid: OID) -> Result<(), Error>
 where
-    error::Error: From<<DB as KVStore<'a>>::Error>,
+    Error: From<<DB as KVStore<'a>>::Error>,
 {
     let start = key_update(oid, 0);
     let end = key_update(oid, u32::MAX);
@@ -321,11 +329,15 @@ where
     Ok(())
 }
 
-fn flush_doc<'a, DB: DocStore<'a> + ?Sized>(db: &DB, oid: OID) -> Result<Option<Doc>, Error>
+fn flush_doc<'a, DB: DocStore<'a> + ?Sized>(
+    db: &DB,
+    oid: OID,
+    options: yrs::Options,
+) -> Result<Option<Doc>, Error>
 where
-    error::Error: From<<DB as KVStore<'a>>::Error>,
+    Error: From<<DB as KVStore<'a>>::Error>,
 {
-    let doc = Doc::new();
+    let doc = Doc::with_options(options);
     let found = load_doc(db, oid, &mut doc.transact_mut())?;
     if found & !(1 << 31) != 0 {
         // loaded doc was generated from updates
