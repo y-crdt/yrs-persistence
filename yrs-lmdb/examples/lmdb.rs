@@ -4,7 +4,7 @@ use lmdb_rs::Environment;
 use std::sync::Arc;
 use std::time::Instant;
 use yrs::{Doc, Text, Transact};
-use yrs_kvstore::DocStore;
+use yrs_kvstore::DocOps;
 use yrs_lmdb::LmdbStore;
 
 struct Cleaner(&'static str);

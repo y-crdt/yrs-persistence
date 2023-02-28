@@ -3,7 +3,7 @@ use lmdb_rs::{CursorKeyRangeIter, Database, MdbError, ReadonlyTransaction};
 use std::ops::Deref;
 use yrs_kvstore::error::Error;
 use yrs_kvstore::keys::Key;
-use yrs_kvstore::{DocStore, KVEntry, KVStore};
+use yrs_kvstore::{DocOps, KVEntry, KVStore};
 
 trait OptionalNotFound {
     type Return;
@@ -52,7 +52,7 @@ impl<'db> Deref for LmdbStore<'db> {
     }
 }
 
-impl<'db> DocStore<'db> for LmdbStore<'db> {}
+impl<'db> DocOps<'db> for LmdbStore<'db> {}
 
 impl<'db> KVStore<'db> for LmdbStore<'db> {
     type Error = MdbError;
@@ -189,7 +189,7 @@ impl<'a> Iterator for OwnedCursorRange<'a> {
 
 #[cfg(test)]
 mod test {
-    use crate::{DocStore, LmdbStore};
+    use crate::{DocOps, LmdbStore};
     use lmdb_rs::core::DbCreate;
     use lmdb_rs::Environment;
     use std::sync::Arc;

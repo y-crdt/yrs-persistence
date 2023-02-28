@@ -2,7 +2,7 @@ use rocksdb::{
     DBIteratorWithThreadMode, DBPinnableSlice, Direction, IteratorMode, ReadOptions, Transaction,
 };
 use std::ops::Deref;
-use yrs_kvstore::{DocStore, KVEntry, KVStore};
+use yrs_kvstore::{DocOps, KVEntry, KVStore};
 
 #[repr(transparent)]
 pub struct RocksDBStore<'a, DB>(Transaction<'a, DB>);
@@ -37,7 +37,7 @@ impl<'a, DB> Deref for RocksDBStore<'a, DB> {
     }
 }
 
-impl<'a, DB> DocStore<'a> for RocksDBStore<'a, DB> {}
+impl<'a, DB> DocOps<'a> for RocksDBStore<'a, DB> {}
 
 impl<'a, DB> KVStore<'a> for RocksDBStore<'a, DB> {
     type Error = rocksdb::Error;
@@ -163,7 +163,7 @@ mod test {
     use rocksdb::TransactionDB;
     use std::sync::Arc;
     use yrs::{Doc, GetString, ReadTxn, Text, Transact};
-    use yrs_kvstore::DocStore;
+    use yrs_kvstore::DocOps;
 
     struct Cleaner(&'static str);
 

@@ -6,17 +6,22 @@ use crate::keys::{
     doc_oid_name, key_doc, key_doc_end, key_doc_start, key_meta, key_meta_end, key_meta_start,
     key_oid, key_state_vector, key_update, Key, KEYSPACE_DOC, KEYSPACE_OID, OID, V1,
 };
+use std::convert::TryInto;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, TransactionMut, Update};
-use std::convert::TryInto;
 
 /// A trait to be implemented by the specific key-value store transaction equivalent in order to
-/// auto-implement features provided by [DocStore] trait.
+/// auto-implement features provided by [DocOps] trait.
 pub trait KVStore<'a> {
+    /// Error type returned from the implementation.
     type Error: std::error::Error;
+    /// Cursor type used to iterate over the ordered range of key-value entries.
     type Cursor: Iterator<Item = Self::Entry>;
+    /// Entry type returned by cursor.
     type Entry: KVEntry;
+    /// Type returned from the implementation. Different key-value stores have different
+    /// abstractions over the binary data they use.
     type Return: AsRef<[u8]>;
 
     /// Return a value stored under given `key` or `None` if key was not found.
@@ -24,12 +29,9 @@ pub trait KVStore<'a> {
 
     /// Insert a new `value` under given `key` or replace an existing value with new one if
     /// entry with that `key` already existed.
-    ///
-    /// Return previously stored value, if entry existed before.
     fn upsert(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error>;
 
     /// Return a value stored under the given `key` if it exists.
-    /// Return previously stored value, if entry existed before.
     fn remove(&self, key: &[u8]) -> Result<(), Self::Error>;
 
     /// Remove all keys between `from`..=`to` range of keys.
@@ -51,10 +53,15 @@ pub trait KVEntry {
     fn value(&self) -> &[u8];
 }
 
-pub trait DocStore<'a>: KVStore<'a> + Sized
+/// Trait used to automatically implement core operations over the Yrs document.
+pub trait DocOps<'a>: KVStore<'a> + Sized
 where
     Error: From<<Self as KVStore<'a>>::Error>,
 {
+    /// Inserts or updates a document given it's read transaction and name. lib0 v1 encoding is
+    /// used for storing the document.
+    ///
+    /// This feature requires a write capabilities from the database transaction.
     fn insert_doc<K: AsRef<[u8]> + ?Sized, T: ReadTxn>(
         &self,
         name: &K,
@@ -65,6 +72,13 @@ where
         self.insert_doc_raw_v1(name.as_ref(), &doc_state, &state_vector)
     }
 
+    /// Inserts or updates a document given it's binary update and state vector. lib0 v1 encoding is
+    /// assumed as a format for storing the document.
+    ///
+    /// This is useful when you i.e. want to pre-serialize big document prior to acquiring
+    /// a database transaction.
+    ///
+    /// This feature requires a write capabilities from the database transaction.
     fn insert_doc_raw_v1(
         &self,
         name: &[u8],
@@ -76,6 +90,11 @@ where
         Ok(())
     }
 
+    /// Loads the document state stored in current database under given document `name` into
+    /// in-memory Yrs document using provided [TransactionMut]. This includes potential update
+    /// entries that may not have been merged with the main document state yet.
+    ///
+    /// This feature requires only a read capabilities from the database transaction.
     fn load_doc<K: AsRef<[u8]> + ?Sized>(
         &self,
         name: &K,
@@ -89,10 +108,22 @@ where
         }
     }
 
+    /// Merges all updates stored via [Self::push_update] that were detached from the main document
+    /// state, updates the document and its state vector and finally prunes the updates that have
+    /// been integrated this way. Returns the [Doc] with the most recent state produced this way.
+    ///
+    /// This feature requires a write capabilities from the database transaction.
     fn flush_doc<K: AsRef<[u8]> + ?Sized>(&self, name: &K) -> Result<Option<Doc>, Error> {
         self.flush_doc_with(name, yrs::Options::default())
     }
 
+    /// Merges all updates stored via [Self::push_update] that were detached from the main document
+    /// state, updates the document and its state vector and finally prunes the updates that have
+    /// been integrated this way. `options` are used to drive the details of integration process.
+    /// Returns the [Doc] with the most recent state produced this way, initialized using
+    /// `options` parameter.
+    ///
+    /// This feature requires a write capabilities from the database transaction.
     fn flush_doc_with<K: AsRef<[u8]> + ?Sized>(
         &self,
         name: &K,
@@ -106,6 +137,15 @@ where
         }
     }
 
+    /// Returns the [StateVector] stored directly for the document with a given `name`.
+    /// Returns `None` if the state vector was not stored.
+    ///
+    /// Keep in mind that this method only returns a state vector that's stored directly. A second
+    /// tuple parameter boolean informs if returned value is up to date. If that's not the case, it
+    /// means that state vector exists but must be recalculated from the collection of persisted
+    /// updates using either [Self::load_doc] (read-only) or [Self::flush_doc] (read-write).
+    ///
+    /// This feature requires only the read capabilities from the database transaction.
     fn get_state_vector<K: AsRef<[u8]> + ?Sized>(
         &self,
         name: &K,
@@ -129,6 +169,14 @@ where
         }
     }
 
+    /// Appends new update without integrating it directly into document store (which is faster
+    /// than persisting full document state on every update). Updates are assumed to be serialized
+    /// using lib0 v1 encoding.
+    ///
+    /// Returns a sequence number of a stored update. Once updates are integrated into document and
+    /// pruned (using [Self::flush_doc] method), sequence number is reset.
+    ///
+    /// This feature requires a write capabilities from the database transaction.
     fn push_update<K: AsRef<[u8]> + ?Sized>(&self, name: &K, update: &[u8]) -> Result<u32, Error> {
         let oid = get_or_create_oid(self, name.as_ref())?;
         let last_clock = {
@@ -148,6 +196,10 @@ where
         Ok(clock)
     }
 
+    /// Returns an update (encoded using lib0 v1 encoding) which contains all new changes that
+    /// happened since provided state vector for a given document.
+    ///
+    /// This feature requires only the read capabilities from the database transaction.
     fn get_diff<K: AsRef<[u8]> + ?Sized>(
         &self,
         name: &K,
@@ -165,6 +217,9 @@ where
         }
     }
 
+    /// Removes all data associated with the current document (including its updates and metadata).
+    ///
+    /// This feature requires a write capabilities from the database transaction.
     fn clear_doc<K: AsRef<[u8]> + ?Sized>(&self, name: &K) -> Result<(), Error> {
         let oid_key = key_oid(name.as_ref());
         if let Some(oid) = self.get(&oid_key)? {
@@ -185,6 +240,9 @@ where
         Ok(())
     }
 
+    /// Returns a metadata value stored under its metadata `key` for a document with given `name`.
+    ///
+    /// This feature requires only the read capabilities from the database transaction.
     fn get_meta<K1: AsRef<[u8]> + ?Sized, K2: AsRef<[u8]> + ?Sized>(
         &self,
         name: &K1,
@@ -198,6 +256,10 @@ where
         }
     }
 
+    /// Inserts or updates new `meta` value stored under its metadata `key` for a document with
+    /// given `name`.
+    ///
+    /// This feature requires write capabilities from the database transaction.
     fn insert_meta<K1: AsRef<[u8]> + ?Sized, K2: AsRef<[u8]> + ?Sized>(
         &self,
         name: &K1,
@@ -210,6 +272,9 @@ where
         Ok(())
     }
 
+    /// Removes an metadata entry stored under given metadata `key` for a document with provided `name`.
+    ///
+    /// This feature requires write capabilities from the database transaction.
     fn remove_meta<K1: AsRef<[u8]> + ?Sized, K2: AsRef<[u8]> + ?Sized>(
         &self,
         name: &K1,
@@ -222,6 +287,7 @@ where
         Ok(())
     }
 
+    /// Returns an iterator over all document names stored in current database.
     fn iter_docs(&self) -> Result<DocsNameIter<Self::Cursor, Self::Entry>, Error> {
         let start = Key::from_const([V1, KEYSPACE_OID]);
         let end = Key::from_const([V1, KEYSPACE_DOC]);
@@ -229,6 +295,7 @@ where
         Ok(DocsNameIter { cursor, start, end })
     }
 
+    /// Returns an iterator over all metadata entries stored for a given document.
     fn iter_meta<K: AsRef<[u8]> + ?Sized>(
         &self,
         doc_name: &K,
@@ -244,7 +311,7 @@ where
     }
 }
 
-fn get_oid<'a, DB: DocStore<'a> + ?Sized>(db: &DB, name: &[u8]) -> Result<Option<OID>, Error>
+fn get_oid<'a, DB: DocOps<'a> + ?Sized>(db: &DB, name: &[u8]) -> Result<Option<OID>, Error>
 where
     Error: From<<DB as KVStore<'a>>::Error>,
 {
@@ -259,7 +326,7 @@ where
     }
 }
 
-fn get_or_create_oid<'a, DB: DocStore<'a> + ?Sized>(db: &DB, name: &[u8]) -> Result<OID, Error>
+fn get_or_create_oid<'a, DB: DocOps<'a> + ?Sized>(db: &DB, name: &[u8]) -> Result<OID, Error>
 where
     Error: From<<DB as KVStore<'a>>::Error>,
 {
@@ -289,7 +356,7 @@ where
     }
 }
 
-fn load_doc<'a, DB: DocStore<'a> + ?Sized>(
+fn load_doc<'a, DB: DocOps<'a> + ?Sized>(
     db: &DB,
     oid: OID,
     txn: &mut TransactionMut,
@@ -324,7 +391,7 @@ where
     Ok(update_count)
 }
 
-fn delete_updates<'a, DB: DocStore<'a> + ?Sized>(db: &DB, oid: OID) -> Result<(), Error>
+fn delete_updates<'a, DB: DocOps<'a> + ?Sized>(db: &DB, oid: OID) -> Result<(), Error>
 where
     Error: From<<DB as KVStore<'a>>::Error>,
 {
@@ -334,7 +401,7 @@ where
     Ok(())
 }
 
-fn flush_doc<'a, DB: DocStore<'a> + ?Sized>(
+fn flush_doc<'a, DB: DocOps<'a> + ?Sized>(
     db: &DB,
     oid: OID,
     options: yrs::Options,
@@ -359,7 +426,7 @@ where
     }
 }
 
-fn insert_inner_v1<'a, DB: DocStore<'a> + ?Sized>(
+fn insert_inner_v1<'a, DB: DocOps<'a> + ?Sized>(
     db: &DB,
     oid: OID,
     doc_state_v1: &[u8],

@@ -5,7 +5,7 @@ use lmdb_rs::Environment;
 use rand::thread_rng;
 use std::sync::Arc;
 use yrs::{uuid_v4, Doc, Text, Transact};
-use yrs_kvstore::DocStore;
+use yrs_kvstore::DocOps;
 use yrs_lmdb::LmdbStore;
 
 fn bench(c: &mut Criterion) {

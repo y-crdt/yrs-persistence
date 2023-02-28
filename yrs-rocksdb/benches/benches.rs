@@ -4,7 +4,7 @@ use rand::thread_rng;
 use rocksdb::TransactionDB;
 use std::sync::Arc;
 use yrs::{uuid_v4, Doc, Text, Transact};
-use yrs_kvstore::DocStore;
+use yrs_kvstore::DocOps;
 use yrs_rocksdb::RocksDBStore;
 
 fn bench(c: &mut Criterion) {
