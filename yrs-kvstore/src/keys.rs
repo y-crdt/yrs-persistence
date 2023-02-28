@@ -1,8 +1,6 @@
-use lmdb_rs::{MdbValue, ToMdbValue};
 use smallvec::{smallvec, SmallVec};
-use std::ffi::c_void;
-use std::io::{Result, Write};
-use std::mem::size_of;
+use std::io::Write;
+use std::ops::Deref;
 
 pub const V1: u8 = 0;
 
@@ -113,6 +111,14 @@ impl<const N: usize> Key<N> {
     }
 }
 
+impl<const N: usize> Deref for Key<N> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
 impl<const N: usize> AsRef<[u8]> for Key<N> {
     #[inline]
     fn as_ref(&self) -> &[u8] {
@@ -133,9 +139,9 @@ impl<const N: usize> Into<Vec<u8>> for Key<N> {
     }
 }
 
-impl<const N: usize> ToMdbValue for Key<N> {
-    fn to_mdb_value(&self) -> MdbValue {
-        let bytes = self.0.as_ptr() as *const c_void;
-        unsafe { MdbValue::new(bytes, self.0.len()) }
-    }
-}
+//impl<const N: usize> ToMdbValue for Key<N> {
+//    fn to_mdb_value(&self) -> MdbValue {
+//        let bytes = self.0.as_ptr() as *const c_void;
+//        unsafe { MdbValue::new(bytes, self.0.len()) }
+//    }
+//}
