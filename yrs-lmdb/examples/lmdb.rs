@@ -4,13 +4,41 @@ use lmdb_rs::Environment;
 use std::sync::Arc;
 use std::time::Instant;
 use yrs::{Doc, Text, Transact};
-use yrs_lmdb::DocStore;
+use yrs_kvstore::DocStore;
+use yrs_lmdb::LmdbStore;
+
+struct Cleaner(&'static str);
+
+impl Cleaner {
+    fn new(dir: &'static str) -> Self {
+        Self::cleanup(dir);
+        Cleaner(dir)
+    }
+
+    fn dir(&self) -> &str {
+        self.0
+    }
+
+    fn cleanup(dir: &str) {
+        if let Err(_) = std::fs::remove_dir_all(dir) {
+            // if dir doesn't exists, ignore
+        }
+    }
+}
+
+impl Drop for Cleaner {
+    fn drop(&mut self) {
+        Self::cleanup(self.dir());
+    }
+}
 
 fn main() {
+    let cleaner = Cleaner::new("example-lmdb");
     let env = Environment::new()
         .autocreate_dir(true)
-        .max_dbs(4)
-        .open("example-lmdb", 0o777)
+        .map_size(256 * 1024 * 1024)
+        .max_dbs(1)
+        .open(cleaner.dir(), 0o777)
         .unwrap();
     let env = Arc::new(env);
     let handle = Arc::new(env.create_db("test", DbCreate).unwrap());
@@ -20,13 +48,12 @@ fn main() {
     let text = doc.get_or_insert_text("text");
 
     // store subsequent updates automatically
-    let stat = env.stat().unwrap();
     let _sub = {
         let env = env.clone();
         let handle = handle.clone();
         doc.observe_update_v1(move |_, e| {
             let txn = env.new_transaction().unwrap();
-            let db = txn.bind(&handle);
+            let db = LmdbStore::from(txn.bind(&handle));
             let i = db.push_update(doc_name, &e.update).unwrap();
             if i % 128 == 0 {
                 // compact updates into document
@@ -41,14 +68,14 @@ fn main() {
         // load document using readonly transaction
         let mut txn = doc.transact_mut();
         let db_txn = env.get_reader().unwrap();
-        let db = db_txn.bind(&handle);
+        let db = LmdbStore::from(db_txn.bind(&handle));
         db.load_doc(&doc_name, &mut txn).unwrap();
     }
 
     // execute editing trace
-    let ops = read_input("./examples/editing-trace.bin");
-    let now = Instant::now();
+    let ops = read_input("editing-trace.bin");
     let ops_count = ops.len();
+    let now = Instant::now();
     for op in ops.iter() {
         let mut txn = doc.transact_mut();
         match op {

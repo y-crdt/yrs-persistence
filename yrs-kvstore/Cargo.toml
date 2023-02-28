@@ -1,0 +1,28 @@
+[package]
+name = "yrs-kvstore"
+version = "0.1.0"
+description = "Generic persistence layer over Yrs documents"
+license = "MIT"
+authors = ["Bartosz Sypytkowski <b.sypytkowski@gmail.com>"]
+keywords = ["crdt", "yrs", "persistence"]
+edition = "2018"
+homepage = "https://github.com/y-crdt/y-crdt/"
+repository = "https://github.com/y-crdt/y-crdt/"
+readme = "./README.md"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+lib0 = ">= 0.16"
+yrs = ">= 0.16"
+thiserror = "1.0"
+smallvec = { version="1.10", features=["write","union","const_generics","const_new"] }
+
+[dev-dependencies]
+criterion = "0.4"
+rand = "0.7"
+
+[lib]
+doctest = true
+bench = true
+doc = true

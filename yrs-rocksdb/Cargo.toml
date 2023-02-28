@@ -1,0 +1,32 @@
+[package]
+name = "yrs-rocksdb"
+version = "0.1.0"
+description = "Persistence layer over Yrs documents for RocksDB backend"
+license = "MIT"
+authors = ["Bartosz Sypytkowski <b.sypytkowski@gmail.com>"]
+keywords = ["crdt", "yrs", "persistence", "rocksdb"]
+edition = "2018"
+homepage = "https://github.com/y-crdt/y-crdt/"
+repository = "https://github.com/y-crdt/y-crdt/"
+readme = "./README.md"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+yrs-kvstore = {version = "0.1", path = "../yrs-kvstore"}
+rocksdb = { version = ">=0.19" }
+
+[dev-dependencies]
+lib0 = ">= 0.16"
+yrs = ">= 0.16"
+criterion = "0.4"
+rand = "0.7"
+
+[[bench]]
+name = "benches"
+harness = false
+
+[lib]
+doctest = true
+bench = true
+doc = true

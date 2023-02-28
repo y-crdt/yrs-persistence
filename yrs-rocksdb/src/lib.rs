@@ -1,18 +1,52 @@
-use crate::{DocStore, KVEntry, KVStore};
 use rocksdb::{
     DBIteratorWithThreadMode, DBPinnableSlice, Direction, IteratorMode, ReadOptions, Transaction,
 };
+use std::ops::Deref;
+use yrs_kvstore::{DocStore, KVEntry, KVStore};
 
-impl<'a, DB> DocStore<'a> for Transaction<'a, DB> {}
+#[repr(transparent)]
+pub struct RocksDBStore<'a, DB>(Transaction<'a, DB>);
 
-impl<'a, DB> KVStore<'a> for Transaction<'a, DB> {
+impl<'a, DB> RocksDBStore<'a, DB> {
+    #[inline(always)]
+    pub fn commit(self) -> Result<(), rocksdb::Error> {
+        self.0.commit()
+    }
+}
+
+impl<'a, DB> From<Transaction<'a, DB>> for RocksDBStore<'a, DB> {
+    #[inline(always)]
+    fn from(txn: Transaction<'a, DB>) -> Self {
+        RocksDBStore(txn)
+    }
+}
+
+impl<'a, DB> Into<Transaction<'a, DB>> for RocksDBStore<'a, DB> {
+    #[inline(always)]
+    fn into(self) -> Transaction<'a, DB> {
+        self.0
+    }
+}
+
+impl<'a, DB> Deref for RocksDBStore<'a, DB> {
+    type Target = Transaction<'a, DB>;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, DB> DocStore<'a> for RocksDBStore<'a, DB> {}
+
+impl<'a, DB> KVStore<'a> for RocksDBStore<'a, DB> {
     type Error = rocksdb::Error;
     type Cursor = RocksDBIter<'a, DB>;
     type Entry = RocksDBEntry;
     type Return = DBPinnableSlice<'a>;
 
     fn get(&self, key: &[u8]) -> Result<Option<Self::Return>, Self::Error> {
-        if let Some(pinned) = self.get_pinned(key)? {
+        if let Some(pinned) = self.0.get_pinned(key)? {
             Ok(Some(unsafe { std::mem::transmute(pinned) }))
         } else {
             Ok(None)
@@ -20,12 +54,12 @@ impl<'a, DB> KVStore<'a> for Transaction<'a, DB> {
     }
 
     fn upsert(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
-        self.put(key, value)?;
+        self.0.put(key, value)?;
         Ok(())
     }
 
     fn remove(&self, key: &[u8]) -> Result<(), Self::Error> {
-        self.delete(key)?;
+        self.0.delete(key)?;
         Ok(())
     }
 
@@ -33,10 +67,12 @@ impl<'a, DB> KVStore<'a> for Transaction<'a, DB> {
         let mut opt = ReadOptions::default();
         opt.set_iterate_lower_bound(from);
         opt.set_iterate_upper_bound(to);
-        let mut i = self.iterator_opt(IteratorMode::From(from, Direction::Forward), opt);
+        let mut i = self
+            .0
+            .iterator_opt(IteratorMode::From(from, Direction::Forward), opt);
         while let Some(res) = i.next() {
             let (key, _) = res?;
-            self.delete(key)?;
+            self.0.delete(key)?;
         }
         Ok(())
     }
@@ -45,11 +81,24 @@ impl<'a, DB> KVStore<'a> for Transaction<'a, DB> {
         let mut opt = ReadOptions::default();
         opt.set_iterate_lower_bound(from);
         opt.set_iterate_upper_bound(to);
-        let raw = self.iterator_opt(IteratorMode::From(from, Direction::Forward), opt);
+        let raw = self
+            .0
+            .iterator_opt(IteratorMode::From(from, Direction::Forward), opt);
         Ok(RocksDBIter::new(
             unsafe { std::mem::transmute(raw) },
             to.to_vec(),
         ))
+    }
+
+    fn peek_back(&self, key: &[u8]) -> Result<Option<Self::Entry>, Self::Error> {
+        let opt = ReadOptions::default();
+        let mut raw = self.0.raw_iterator_opt(opt);
+        raw.seek_for_prev(key);
+        if let Some((key, value)) = raw.item() {
+            Ok(Some(RocksDBEntry::new(key.into(), value.into())))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -110,10 +159,11 @@ impl KVEntry for RocksDBEntry {
 
 #[cfg(test)]
 mod test {
-    use crate::{get_oid, DocStore};
+    use crate::RocksDBStore;
     use rocksdb::TransactionDB;
     use std::sync::Arc;
     use yrs::{Doc, GetString, ReadTxn, Text, Transact};
+    use yrs_kvstore::DocStore;
 
     struct Cleaner(&'static str);
 
@@ -157,9 +207,8 @@ mod test {
             let mut txn = doc.transact_mut();
             text.insert(&mut txn, 0, "hello");
 
-            let db_txn = db.transaction();
+            let db_txn = RocksDBStore::from(db.transaction());
             db_txn.insert_doc("doc", &txn).unwrap();
-            println!("OID - {:?}", get_oid(&db_txn, "doc".as_bytes()).unwrap());
             db_txn.commit().unwrap();
         }
 
@@ -168,8 +217,7 @@ mod test {
             let doc = Doc::new();
             let text = doc.get_or_insert_text("text");
             let mut txn = doc.transact_mut();
-            let db_txn = db.transaction();
-            println!("OID - {:?}", get_oid(&db_txn, "doc".as_bytes()).unwrap());
+            let db_txn = RocksDBStore::from(db.transaction());
             db_txn.load_doc("doc", &mut txn).unwrap();
 
             assert_eq!(text.get_string(&txn), "hello");
@@ -181,7 +229,7 @@ mod test {
 
         // remove document
         {
-            let db_txn = db.transaction();
+            let db_txn = RocksDBStore::from(db.transaction());
 
             db_txn.clear_doc("doc").unwrap();
 
@@ -209,7 +257,7 @@ mod test {
             let mut txn = doc.transact_mut();
             text.push(&mut txn, "hello");
 
-            let db_txn = db.transaction();
+            let db_txn = RocksDBStore::from(db.transaction());
 
             db_txn.insert_doc("doc", &txn).unwrap();
 
@@ -221,7 +269,7 @@ mod test {
 
         // retrieve document
         {
-            let db_txn = db.transaction();
+            let db_txn = RocksDBStore::from(db.transaction());
 
             let doc = Doc::new();
             let text = doc.get_or_insert_text("text");
@@ -245,7 +293,7 @@ mod test {
 
             let db = db.clone();
             let _sub = doc.observe_update_v1(move |_, u| {
-                let db_txn = db.transaction();
+                let db_txn = RocksDBStore::from(db.transaction());
                 db_txn.push_update(DOC_NAME, &u.update).unwrap();
                 db_txn.commit().unwrap();
             });
@@ -261,7 +309,7 @@ mod test {
             let text = doc.get_or_insert_text("text");
             let mut txn = doc.transact_mut();
 
-            let db_txn = db.transaction();
+            let db_txn = RocksDBStore::from(db.transaction());
             db_txn.load_doc(DOC_NAME, &mut txn).unwrap();
 
             assert_eq!(text.get_string(&txn), "abc");
@@ -269,7 +317,7 @@ mod test {
 
         // flush document
         {
-            let db_txn = db.transaction();
+            let db_txn = RocksDBStore::from(db.transaction());
             let doc = db_txn.flush_doc(DOC_NAME).unwrap().unwrap();
             db_txn.commit().unwrap();
 
@@ -291,7 +339,7 @@ mod test {
             let text = doc.get_or_insert_text("text");
             let db = db.clone();
             let _sub = doc.observe_update_v1(move |_, u| {
-                let db_txn = db.transaction();
+                let db_txn = RocksDBStore::from(db.transaction());
                 db_txn.push_update(DOC_NAME, &u.update).unwrap();
                 db_txn.commit().unwrap();
             });
@@ -304,7 +352,7 @@ mod test {
             sv
         };
 
-        let db_txn = db.transaction();
+        let db_txn = RocksDBStore::from(db.transaction());
         let (sv, completed) = db_txn.get_state_vector(DOC_NAME).unwrap();
         assert!(sv.is_none());
         assert!(!completed); // since it's not completed, we should recalculate state vector from doc state
@@ -322,7 +370,7 @@ mod test {
 
             let db = db.clone();
             let _sub = doc.observe_update_v1(move |_, u| {
-                let db_txn = db.transaction();
+                let db_txn = RocksDBStore::from(db.transaction());
                 db_txn.push_update(DOC_NAME, &u.update).unwrap();
                 db_txn.commit().unwrap();
             });
@@ -336,7 +384,7 @@ mod test {
             (sv, update)
         };
 
-        let db_txn = db.transaction();
+        let db_txn = RocksDBStore::from(db.transaction());
         let actual = db_txn.get_diff(DOC_NAME, &sv).unwrap();
         assert_eq!(actual, Some(expected));
     }
@@ -357,14 +405,14 @@ mod test {
             text.push(&mut doc.transact_mut(), "c");
             let update = doc.transact().encode_diff_v1(&sv);
 
-            let db_txn = db.transaction();
+            let db_txn = RocksDBStore::from(db.transaction());
             db_txn.insert_doc(DOC_NAME, &doc.transact()).unwrap();
             db_txn.commit().unwrap();
 
             (sv, update)
         };
 
-        let db_txn = db.transaction();
+        let db_txn = RocksDBStore::from(db.transaction());
         let actual = db_txn.get_diff(DOC_NAME, &sv).unwrap();
         assert_eq!(actual, Some(expected));
     }
@@ -375,7 +423,7 @@ mod test {
         let cleaner = Cleaner::new("lmdb-doc_meta");
         let db = init_env(cleaner.dir());
 
-        let db_txn = db.transaction();
+        let db_txn = RocksDBStore::from(db.transaction());
         let value = db_txn.get_meta(DOC_NAME, "key").unwrap();
         assert!(value.is_none());
         db_txn
@@ -383,7 +431,7 @@ mod test {
             .unwrap();
         db_txn.commit().unwrap();
 
-        let db_txn = db.transaction();
+        let db_txn = RocksDBStore::from(db.transaction());
         let prev = db_txn.get_meta(DOC_NAME, "key").unwrap();
         db_txn
             .insert_meta(DOC_NAME, "key", "value2".as_bytes())
@@ -391,7 +439,7 @@ mod test {
         db_txn.commit().unwrap();
         assert_eq!(prev.as_deref(), Some("value1".as_bytes()));
 
-        let db_txn = db.transaction();
+        let db_txn = RocksDBStore::from(db.transaction());
         let prev = db_txn.get_meta(DOC_NAME, "key").unwrap();
         db_txn.remove_meta(DOC_NAME, "key").unwrap();
         assert_eq!(prev.as_deref(), Some("value2".as_bytes()));
@@ -403,7 +451,7 @@ mod test {
     fn doc_meta_iter() {
         let cleaner = Cleaner::new("rocksdb-doc_meta_iter");
         let db = init_env(cleaner.dir());
-        let db_txn = db.transaction();
+        let db_txn = RocksDBStore::from(db.transaction());
 
         db_txn.insert_meta("A", "key1", [1].as_ref()).unwrap();
         db_txn.insert_meta("B", "key2", [2].as_ref()).unwrap();
@@ -423,7 +471,7 @@ mod test {
 
         // insert metadata
         {
-            let db_txn = db.transaction();
+            let db_txn = RocksDBStore::from(db.transaction());
             db_txn.insert_meta("A", "key1", [1].as_ref()).unwrap();
             db_txn.commit().unwrap();
         }
@@ -435,7 +483,7 @@ mod test {
             let mut txn = doc.transact_mut();
             text.push(&mut txn, "hello world");
 
-            let db_txn = db.transaction();
+            let db_txn = RocksDBStore::from(db.transaction());
             db_txn.insert_doc("B", &txn).unwrap();
             db_txn.commit().unwrap();
         }
@@ -445,7 +493,7 @@ mod test {
             let doc = Doc::new();
             let db = db.clone();
             let _sub = doc.observe_update_v1(move |_, u| {
-                let db_txn = db.transaction();
+                let db_txn = RocksDBStore::from(db.transaction());
                 db_txn.push_update("C", &u.update).unwrap();
                 db_txn.commit().unwrap();
             });
@@ -455,7 +503,7 @@ mod test {
         }
 
         {
-            let db_txn = db.transaction();
+            let db_txn = RocksDBStore::from(db.transaction());
             let mut i = db_txn.iter_docs().unwrap();
             assert_eq!(i.next(), Some("A".as_bytes().into()));
             assert_eq!(i.next(), Some("B".as_bytes().into()));
@@ -465,13 +513,13 @@ mod test {
 
         // clear doc
         {
-            let db_txn = db.transaction();
+            let db_txn = RocksDBStore::from(db.transaction());
             db_txn.clear_doc("B").unwrap();
             db_txn.commit().unwrap();
         }
 
         {
-            let db_txn = db.transaction();
+            let db_txn = RocksDBStore::from(db.transaction());
             let mut i = db_txn.iter_docs().unwrap();
             assert_eq!(i.next(), Some("A".as_bytes().into()));
             assert_eq!(i.next(), Some("C".as_bytes().into()));

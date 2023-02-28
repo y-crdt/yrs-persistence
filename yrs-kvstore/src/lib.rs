@@ -1,7 +1,5 @@
 pub mod error;
 pub mod keys;
-pub mod lmdb;
-pub mod rocksdb;
 
 use crate::error::Error;
 use crate::keys::{
@@ -11,7 +9,10 @@ use crate::keys::{
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, TransactionMut, Update};
+use std::convert::TryInto;
 
+/// A trait to be implemented by the specific key-value store transaction equivalent in order to
+/// auto-implement features provided by [DocStore] trait.
 pub trait KVStore<'a> {
     type Error: std::error::Error;
     type Cursor: Iterator<Item = Self::Entry>;
@@ -36,6 +37,13 @@ pub trait KVStore<'a> {
 
     /// Return an iterator over all entries between `from`..=`to` range of keys.
     fn iter_range(&self, from: &[u8], to: &[u8]) -> Result<Self::Cursor, Self::Error>;
+
+    /// Looks into the last entry value prior to a given key. The provided key parameter may not
+    /// exist and it's used only to establish cursor position in ordered key collection.
+    ///
+    /// In example: in a key collection of `{1,2,5,7}`, this method with the key parameter of `4`
+    /// should return value of `2`.
+    fn peek_back(&self, key: &[u8]) -> Result<Option<Self::Entry>, Self::Error>;
 }
 
 pub trait KVEntry {
@@ -124,10 +132,8 @@ where
     fn push_update<K: AsRef<[u8]> + ?Sized>(&self, name: &K, update: &[u8]) -> Result<u32, Error> {
         let oid = get_or_create_oid(self, name.as_ref())?;
         let last_clock = {
-            let start = key_update(oid, 0);
             let end = key_update(oid, u32::MAX);
-            let iter = self.iter_range(&start, &end)?;
-            if let Some(e) = iter.last() {
+            if let Some(e) = self.peek_back(&end)? {
                 let last_key = e.key();
                 let len = last_key.len();
                 let last_clock = &last_key[(len - 5)..(len - 1)]; // update key scheme: 01{name:n}1{clock:4}0
@@ -269,9 +275,8 @@ where
            Use 00{0000}0 to try to move cursor to GTE first document, then move cursor 1 position
            back to get the latest OID or not found.
         */
-        let cursor = db.iter_range([V1, KEYSPACE_OID].as_ref(), [V1, KEYSPACE_DOC].as_ref())?;
-        let last_oid = if let Some(last) = cursor.last() {
-            let value = last.value();
+        let last_oid = if let Some(e) = db.peek_back([V1, KEYSPACE_DOC].as_ref())? {
+            let value = e.value();
             let last_value = OID::from_be_bytes(value.try_into().unwrap());
             last_value
         } else {

@@ -1,10 +1,11 @@
-use crate::error::Error;
-use crate::keys::Key;
-use crate::{DocStore, KVEntry, KVStore};
 use lmdb_rs::core::{CursorIterator, MdbResult};
-use lmdb_rs::{CursorKeyRangeIter, CursorValue, Database, MdbError, ReadonlyTransaction};
+use lmdb_rs::{CursorKeyRangeIter, Database, MdbError, ReadonlyTransaction};
+use std::ops::Deref;
+use yrs_kvstore::error::Error;
+use yrs_kvstore::keys::Key;
+use yrs_kvstore::{DocStore, KVEntry, KVStore};
 
-pub(crate) trait OptionalNotFound {
+trait OptionalNotFound {
     type Return;
     type Error;
 
@@ -25,34 +26,60 @@ impl<T> OptionalNotFound for MdbResult<T> {
     }
 }
 
-impl<'a> DocStore<'a> for Database<'a> {}
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct LmdbStore<'db>(Database<'db>);
 
-impl<'a> KVStore<'a> for Database<'a> {
+impl<'db> From<Database<'db>> for LmdbStore<'db> {
+    #[inline(always)]
+    fn from(db: Database<'db>) -> Self {
+        LmdbStore(db)
+    }
+}
+
+impl<'db> Into<Database<'db>> for LmdbStore<'db> {
+    #[inline(always)]
+    fn into(self) -> Database<'db> {
+        self.0
+    }
+}
+
+impl<'db> Deref for LmdbStore<'db> {
+    type Target = Database<'db>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'db> DocStore<'db> for LmdbStore<'db> {}
+
+impl<'db> KVStore<'db> for LmdbStore<'db> {
     type Error = MdbError;
-    type Cursor = LmdbRange<'a>;
-    type Entry = LmdbEntry<'a>;
-    type Return = &'a [u8];
+    type Cursor = LmdbRange<'db>;
+    type Entry = LmdbEntry<'db>;
+    type Return = &'db [u8];
 
     fn get(&self, key: &[u8]) -> Result<Option<Self::Return>, Self::Error> {
-        let value = self.get(&key).optional()?;
+        let value = self.0.get(&key).optional()?;
         Ok(value)
     }
 
     fn upsert(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
-        self.set(&key, &value)?;
+        self.0.set(&key, &value)?;
         Ok(())
     }
 
     fn remove(&self, key: &[u8]) -> Result<(), Self::Error> {
-        let prev: Option<&[u8]> = self.get(&key).optional()?;
+        let prev: Option<&[u8]> = self.0.get(&key).optional()?;
         if prev.is_some() {
-            self.del(&key)?;
+            self.0.del(&key)?;
         }
         Ok(())
     }
 
     fn remove_range(&self, from: &[u8], to: &[u8]) -> Result<(), Self::Error> {
-        let mut c = self.new_cursor()?;
+        let mut c = self.0.new_cursor()?;
         if c.to_gte_key(&from).optional()?.is_some() {
             while c.get_key::<&[u8]>()? <= to {
                 c.del()?;
@@ -67,8 +94,19 @@ impl<'a> KVStore<'a> for Database<'a> {
     fn iter_range(&self, from: &[u8], to: &[u8]) -> Result<Self::Cursor, Self::Error> {
         let from = from.to_vec();
         let to = to.to_vec();
-        let cursor = unsafe { std::mem::transmute(self.keyrange(&from, &to)?) };
+        let cursor = unsafe { std::mem::transmute(self.0.keyrange(&from, &to)?) };
         Ok(LmdbRange { from, to, cursor })
+    }
+
+    fn peek_back(&self, key: &[u8]) -> Result<Option<Self::Entry>, Self::Error> {
+        let mut cursor = self.0.new_cursor()?;
+        cursor.to_gte_key(&key).optional()?;
+        if cursor.to_prev_key().optional()?.is_none() {
+            return Ok(None);
+        }
+        let key = cursor.get_key()?;
+        let value = cursor.get_value()?;
+        Ok(Some(LmdbEntry::new(key, value)))
     }
 }
 
@@ -82,21 +120,28 @@ impl<'a> Iterator for LmdbRange<'a> {
     type Item = LmdbEntry<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let value = self.cursor.next()?;
-        Some(LmdbEntry(value))
+        let (key, value) = self.cursor.next()?.get();
+        Some(LmdbEntry::new(key, value))
     }
 }
 
-pub struct LmdbEntry<'a>(CursorValue<'a>);
+pub struct LmdbEntry<'a> {
+    key: &'a [u8],
+    value: &'a [u8],
+}
 
-impl<'a> LmdbEntry<'a> {}
+impl<'a> LmdbEntry<'a> {
+    fn new(key: &'a [u8], value: &'a [u8]) -> Self {
+        LmdbEntry { key, value }
+    }
+}
 
 impl<'a> KVEntry for LmdbEntry<'a> {
     fn key(&self) -> &[u8] {
-        self.0.get_key()
+        self.key
     }
     fn value(&self) -> &[u8] {
-        self.0.get_value()
+        self.value
     }
 }
 
@@ -144,7 +189,7 @@ impl<'a> Iterator for OwnedCursorRange<'a> {
 
 #[cfg(test)]
 mod test {
-    use crate::DocStore;
+    use crate::{DocStore, LmdbStore};
     use lmdb_rs::core::DbCreate;
     use lmdb_rs::Environment;
     use std::sync::Arc;
@@ -198,7 +243,7 @@ mod test {
             text.insert(&mut txn, 0, "hello");
 
             let db_txn = env.new_transaction().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
             db.insert_doc("doc", &txn).unwrap();
             db_txn.commit().unwrap();
         }
@@ -209,7 +254,7 @@ mod test {
             let text = doc.get_or_insert_text("text");
             let mut txn = doc.transact_mut();
             let db_txn = env.get_reader().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
             db.load_doc("doc", &mut txn).unwrap();
 
             assert_eq!(text.get_string(&txn), "hello");
@@ -222,7 +267,7 @@ mod test {
         // remove document
         {
             let db_txn = env.new_transaction().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
 
             db.clear_doc("doc").unwrap();
 
@@ -252,7 +297,7 @@ mod test {
             text.push(&mut txn, "hello");
 
             let db_txn = env.new_transaction().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
 
             db.insert_doc("doc", &txn).unwrap();
 
@@ -266,7 +311,7 @@ mod test {
         // retrieve document
         {
             let db_txn = env.get_reader().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
 
             let doc = Doc::new();
             let text = doc.get_or_insert_text("text");
@@ -295,7 +340,7 @@ mod test {
             let h = h.clone();
             let _sub = doc.observe_update_v1(move |_, u| {
                 let db_txn = env.new_transaction().unwrap();
-                let db = db_txn.bind(&h);
+                let db = LmdbStore::from(db_txn.bind(&h));
                 db.push_update(DOC_NAME, &u.update).unwrap();
                 db_txn.commit().unwrap();
             });
@@ -312,7 +357,7 @@ mod test {
             let mut txn = doc.transact_mut();
 
             let db_txn = env.get_reader().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
             db.load_doc(DOC_NAME, &mut txn).unwrap();
 
             assert_eq!(text.get_string(&txn), "abc");
@@ -321,7 +366,7 @@ mod test {
         // flush document
         {
             let db_txn = env.new_transaction().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
             let doc = db.flush_doc(DOC_NAME).unwrap().unwrap();
             db_txn.commit().unwrap();
 
@@ -348,7 +393,7 @@ mod test {
             let h = h.clone();
             let _sub = doc.observe_update_v1(move |_, u| {
                 let db_txn = env.new_transaction().unwrap();
-                let db = db_txn.bind(&h);
+                let db = LmdbStore::from(db_txn.bind(&h));
                 db.push_update(DOC_NAME, &u.update).unwrap();
                 db_txn.commit().unwrap();
             });
@@ -362,7 +407,7 @@ mod test {
         };
 
         let db_txn = env.get_reader().unwrap();
-        let db = db_txn.bind(&h);
+        let db = LmdbStore::from(db_txn.bind(&h));
         let (sv, completed) = db.get_state_vector(DOC_NAME).unwrap();
         assert!(sv.is_none());
         assert!(!completed); // since it's not completed, we should recalculate state vector from doc state
@@ -385,7 +430,7 @@ mod test {
             let h = h.clone();
             let _sub = doc.observe_update_v1(move |_, u| {
                 let db_txn = env.new_transaction().unwrap();
-                let db = db_txn.bind(&h);
+                let db = LmdbStore::from(db_txn.bind(&h));
                 db.push_update(DOC_NAME, &u.update).unwrap();
                 db_txn.commit().unwrap();
             });
@@ -400,7 +445,7 @@ mod test {
         };
 
         let db_txn = env.get_reader().unwrap();
-        let db = db_txn.bind(&h);
+        let db = LmdbStore::from(db_txn.bind(&h));
         let actual = db.get_diff(DOC_NAME, &sv).unwrap();
         assert_eq!(actual, Some(expected));
     }
@@ -423,7 +468,7 @@ mod test {
             let update = doc.transact().encode_diff_v1(&sv);
 
             let db_txn = env.new_transaction().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
             db.insert_doc(DOC_NAME, &doc.transact()).unwrap();
             db_txn.commit().unwrap();
 
@@ -431,7 +476,7 @@ mod test {
         };
 
         let db_txn = env.get_reader().unwrap();
-        let db = db_txn.bind(&h);
+        let db = LmdbStore::from(db_txn.bind(&h));
         let actual = db.get_diff(DOC_NAME, &sv).unwrap();
         assert_eq!(actual, Some(expected));
     }
@@ -444,7 +489,7 @@ mod test {
         let h = env.create_db("yrs", DbCreate).unwrap();
 
         let db_txn = env.new_transaction().unwrap();
-        let db = db_txn.bind(&h);
+        let db = LmdbStore::from(db_txn.bind(&h));
         let value = db.get_meta(DOC_NAME, "key").unwrap();
         assert!(value.is_none());
         db.insert_meta(DOC_NAME, "key", "value1".as_bytes())
@@ -452,7 +497,7 @@ mod test {
         db_txn.commit().unwrap();
 
         let db_txn = env.new_transaction().unwrap();
-        let db = db_txn.bind(&h);
+        let db = LmdbStore::from(db_txn.bind(&h));
         let prev = db.get_meta(DOC_NAME, "key").unwrap().map(Vec::from);
         db.insert_meta(DOC_NAME, "key", "value2".as_bytes())
             .unwrap();
@@ -460,7 +505,7 @@ mod test {
         assert_eq!(prev.as_deref(), Some("value1".as_bytes()));
 
         let db_txn = env.new_transaction().unwrap();
-        let db = db_txn.bind(&h);
+        let db = LmdbStore::from(db_txn.bind(&h));
         let prev = db.get_meta(DOC_NAME, "key").unwrap().map(Vec::from);
         db.remove_meta(DOC_NAME, "key").unwrap();
         assert_eq!(prev.as_deref(), Some("value2".as_bytes()));
@@ -474,7 +519,7 @@ mod test {
         let env = init_env(cleaner.dir());
         let h = env.create_db("yrs", DbCreate).unwrap();
         let db_txn = env.new_transaction().unwrap();
-        let db = db_txn.bind(&h);
+        let db = LmdbStore::from(db_txn.bind(&h));
 
         db.insert_meta("A", "key1", [1].as_ref()).unwrap();
         db.insert_meta("B", "key2", [2].as_ref()).unwrap();
@@ -498,7 +543,7 @@ mod test {
         // insert metadata
         {
             let db_txn = env.new_transaction().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
             db.insert_meta("A", "key1", [1].as_ref()).unwrap();
             db_txn.commit().unwrap();
         }
@@ -510,7 +555,7 @@ mod test {
             let mut txn = doc.transact_mut();
             text.push(&mut txn, "hello world");
             let db_txn = env.new_transaction().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
             db.insert_doc("B", &txn).unwrap();
             db_txn.commit().unwrap();
         }
@@ -522,7 +567,7 @@ mod test {
             let h = h.clone();
             let _sub = doc.observe_update_v1(move |_, u| {
                 let db_txn = env.new_transaction().unwrap();
-                let db = db_txn.bind(&h);
+                let db = LmdbStore::from(db_txn.bind(&h));
                 db.push_update("C", &u.update).unwrap();
                 db_txn.commit().unwrap();
             });
@@ -533,7 +578,7 @@ mod test {
 
         {
             let db_txn = env.get_reader().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
             let mut i = db.iter_docs().unwrap();
             assert_eq!(i.next(), Some("A".as_bytes().into()));
             assert_eq!(i.next(), Some("B".as_bytes().into()));
@@ -544,14 +589,14 @@ mod test {
         // clear doc
         {
             let db_txn = env.new_transaction().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
             db.clear_doc("B").unwrap();
             db_txn.commit().unwrap();
         }
 
         {
             let db_txn = env.get_reader().unwrap();
-            let db = db_txn.bind(&h);
+            let db = LmdbStore::from(db_txn.bind(&h));
             let mut i = db.iter_docs().unwrap();
             assert_eq!(i.next(), Some("A".as_bytes().into()));
             assert_eq!(i.next(), Some("C".as_bytes().into()));

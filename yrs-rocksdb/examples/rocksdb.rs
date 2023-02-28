@@ -1,12 +1,39 @@
 use lib0::decoding::{Cursor, Read};
-use rocksdb::{Options, SingleThreaded, TransactionDB, TransactionDBOptions, DB};
+use rocksdb::TransactionDB;
 use std::sync::Arc;
 use std::time::Instant;
 use yrs::{Doc, Text, Transact};
-use yrs_lmdb::DocStore;
+use yrs_kvstore::DocStore;
+use yrs_rocksdb::RocksDBStore;
+
+struct Cleaner(&'static str);
+
+impl Cleaner {
+    fn new(dir: &'static str) -> Self {
+        Self::cleanup(dir);
+        Cleaner(dir)
+    }
+
+    fn dir(&self) -> &str {
+        self.0
+    }
+
+    fn cleanup(dir: &str) {
+        if let Err(_) = std::fs::remove_dir_all(dir) {
+            // if dir doesn't exists, ignore
+        }
+    }
+}
+
+impl Drop for Cleaner {
+    fn drop(&mut self) {
+        Self::cleanup(self.dir());
+    }
+}
 
 fn main() {
-    let db: TransactionDB = TransactionDB::open_default("example-rocksdb").unwrap();
+    let cleaner = Cleaner::new("example-rocksdb");
+    let db: TransactionDB = TransactionDB::open_default(cleaner.dir()).unwrap();
     let db = Arc::new(db);
 
     let doc_name = "sample-doc";
@@ -18,7 +45,7 @@ fn main() {
     let _sub = {
         let db = db.clone();
         doc.observe_update_v1(move |_, e| {
-            let txn = db.transaction();
+            let txn = RocksDBStore::from(db.transaction());
             let i = txn.push_update(doc_name, &e.update).unwrap();
             if i % 128 == 0 {
                 // compact updates into document
@@ -32,12 +59,12 @@ fn main() {
     {
         // load document using readonly transaction
         let mut txn = doc.transact_mut();
-        let db_txn = db.transaction();
+        let db_txn = RocksDBStore::from(db.transaction());
         db_txn.load_doc(&doc_name, &mut txn).unwrap();
     }
 
     // execute editing trace
-    let ops = read_input("./examples/editing-trace.bin");
+    let ops = read_input("editing-trace.bin");
     let now = Instant::now();
     let ops_count = ops.len();
     for op in ops.iter() {
