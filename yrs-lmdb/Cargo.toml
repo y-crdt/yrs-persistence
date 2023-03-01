@@ -6,8 +6,8 @@ license = "MIT"
 authors = ["Bartosz Sypytkowski <b.sypytkowski@gmail.com>"]
 keywords = ["crdt", "yrs", "persistence", "lmdb"]
 edition = "2018"
-homepage = "https://github.com/y-crdt/y-crdt/"
-repository = "https://github.com/y-crdt/y-crdt/"
+homepage = "https://github.com/y-crdt/yrs-persistence"
+repository = "https://github.com/y-crdt/yrs-persistence"
 readme = "./README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -27,6 +27,6 @@ name = "benches"
 harness = false
 
 [lib]
-doctest = true
+doctest = false
 bench = true
 doc = true
