@@ -2,6 +2,7 @@ use smallvec::{smallvec, SmallVec};
 use std::io::Write;
 use std::ops::Deref;
 
+/// Prefix byte used for all of the yrs-kvstore entries.
 pub const V1: u8 = 0;
 
 /*
@@ -15,12 +16,22 @@ pub const V1: u8 = 0;
   Second 0|1 byte is used to differentiate oid index and document key spaces.
 */
 
+/// Prefix byte used for document name -> OID mapping index key space.
 pub const KEYSPACE_OID: u8 = 0;
+
+/// Prefix byte used for document key space.
 pub const KEYSPACE_DOC: u8 = 1;
 
+/// Tag byte within [KEYSPACE_DOC] used to identify document's state entry.
 pub const SUB_DOC: u8 = 0;
+
+/// Tag byte within [KEYSPACE_DOC] used to identify document's state vector entry.
 pub const SUB_STATE_VEC: u8 = 1;
+
+/// Tag byte within [KEYSPACE_DOC] used to identify document's update entries.
 pub const SUB_UPDATE: u8 = 2;
+
+/// Tag byte within [KEYSPACE_DOC] used to identify document's metadata entries.
 pub const SUB_META: u8 = 3;
 
 pub const TERMINATOR: u8 = 0;

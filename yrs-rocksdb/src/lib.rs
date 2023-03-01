@@ -1,9 +1,63 @@
+//! **yrs-rocksdb** is a persistence layer allowing to store [Yrs](https://docs.rs/yrs/latest/yrs/index.html)
+//! documents and providing convenient utility functions to work with them, using RocksDB for persistent backed.
+//!
+//! # Example
+//!
+//! ```rust
+//! use std::sync::Arc;
+//! use rocksdb::TransactionDB;
+//! use yrs::{Doc, Text, Transact};
+//! use yrs_kvstore::DocOps;
+//! use yrs_rocksdb::RocksDBStore;
+//!
+//! let db: Arc<TransactionDB> = Arc::new(TransactionDB::open_default("my-db-path").unwrap());
+//!
+//! let doc = Doc::new();
+//! let text = doc.get_or_insert_text("text");
+//!
+//! // restore document state from DB
+//! {
+//!   let db_txn = RocksDBStore::from(db.transaction());
+//!   db_txn.load_doc("my-doc-name", &mut doc.transact_mut()).unwrap();
+//! }
+//!
+//! // another options is to flush document state right away, but
+//! // this requires a read-write transaction
+//! {
+//!   let db_txn = RocksDBStore::from(db.transaction());
+//!   let doc = db_txn.flush_doc_with("my-doc-name", yrs::Options::default()).unwrap();
+//!   db_txn.commit().unwrap(); // flush may change store state
+//! }
+//!
+//! // configure document to persist every update and
+//! // occassionaly compact them into document state
+//! let sub = {
+//!   let db = db.clone();
+//!   let options = doc.options().clone();
+//!   doc.observe_update_v1(move |_,e| {
+//!       let db_txn = RocksDBStore::from(db.transaction());
+//!       let seq_nr = db_txn.push_update("my-doc-name", &e.update).unwrap();
+//!       if seq_nr % 64 == 0 {
+//!           // occassinally merge updates into the document state
+//!           db_txn.flush_doc_with("my-doc-name", options.clone()).unwrap();
+//!       }
+//!       db_txn.commit().unwrap();
+//!   })
+//! };
+//!
+//! text.insert(&mut doc.transact_mut(), 0, "a");
+//! text.insert(&mut doc.transact_mut(), 1, "b");
+//! text.insert(&mut doc.transact_mut(), 2, "c");
+//! ```
+
 use rocksdb::{
     DBIteratorWithThreadMode, DBPinnableSlice, Direction, IteratorMode, ReadOptions, Transaction,
 };
 use std::ops::Deref;
 use yrs_kvstore::{DocOps, KVEntry, KVStore};
 
+/// Type wrapper around RocksDB [Transaction] struct. Used to extend it with [DocOps]
+/// methods used for convenience when working with Yrs documents.
 #[repr(transparent)]
 pub struct RocksDBStore<'a, DB>(Transaction<'a, DB>);
 

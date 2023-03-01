@@ -1,3 +1,40 @@
+//! yrs-kvstore is a generic library that allows to quickly implement
+//! [Yrs](https://docs.rs/yrs/latest/yrs/index.html) specific document operations over any kind
+//! of persistent key-value store i.e. LMDB or RocksDB.
+//!
+//! In order to do so, persistent unit of transaction should define set of basic operations via
+//! [KVStore] trait implementation. Once this is done it can implement [DocOps]. Latter offers a
+//! set of useful operations like document metadata management options, document and update merging
+//! etc. They are implemented automatically as long struct has correctly implemented [KVStore].
+//!
+//! ## Internal representation
+//!
+//! yrs-kvstore operates around few key spaces. All keys inserted via [DocOps] are prefixed with
+//! [V1] constant. Later on the key space is further divided into:
+//!
+//! - [KEYSPACE_OID] used for object ID (OID) index mapping. Whenever the new document is being
+//!   inserted, a new OID number is generated for it. While document names can be any kind of strings
+//!   OIDs are guaranteed to have constant size. Internally all of the document contents are referred
+//!   to via their OID identifiers.
+//! - [KEYSPACE_DOC] used to store [document state](crate::keys::SUB_DOC), its
+//!   [state vector](crate::keys::SUB_STATE_VEC), corresponding series of
+//!   [updates](crate::keys::SUB_UPDATE) and [metadata](crate::keys::SUB_META). Document state and
+//!   state vector may not represent full system knowledge about the document, as they don't reflect
+//!   information inside document updates. Updates can be stored separately to avoid big document
+//!   binary read/parse/merge/store cycles of every update. It's a good idea to insert updates as they
+//!   come and every once in a while call [DocOps::flush_doc] or [DocOps::flush_doc_with] to merge
+//!   them into document state itself.
+//!
+//! The variants and schemas of byte keys in use could be summarized as:
+//!
+//! ```nocompile
+//! 00{doc_name:N}0      - OID key pattern
+//! 01{oid:4}0           - document key pattern
+//! 01{oid:4}1           - state vector key pattern
+//! 01{oid:4}2{seqNr:4}0 - document update key pattern
+//! 01{oid:4}3{name:M}0  - document meta key pattern
+//! ```
+
 pub mod error;
 pub mod keys;
 
@@ -48,8 +85,11 @@ pub trait KVStore<'a> {
     fn peek_back(&self, key: &[u8]) -> Result<Option<Self::Entry>, Self::Error>;
 }
 
+/// Trait used by [KVStore] to define key-value entry tuples returned by cursor iterators.
 pub trait KVEntry {
+    /// Returns a key of current entry.
     fn key(&self) -> &[u8];
+    /// Returns a value of current entry.
     fn value(&self) -> &[u8];
 }
 

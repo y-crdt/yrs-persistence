@@ -1,3 +1,66 @@
+//! **yrs-lmdb** is a persistence layer allowing to store [Yrs](https://docs.rs/yrs/latest/yrs/index.html)
+//! documents and providing convenient utility functions to work with them, using LMDB for persistent
+//! backend.
+//!
+//! # Example
+//!
+//! ```rust
+//! use std::sync::Arc;
+//! use lmdb_rs::core::DbCreate;
+//! use lmdb_rs::Environment;
+//! use yrs::{Doc, Text, Transact};
+//! use yrs_kvstore::DocOps;
+//! use yrs_lmdb::LmdbStore;
+//!
+//! let env = Arc::new(Environment::new()
+//!     .autocreate_dir(true)
+//!     .max_dbs(4)
+//!     .open("my-lmdb-dir", 0o777)
+//!     .unwrap());
+//! let h = Arc::new(env.create_db("yrs", DbCreate).unwrap());
+//!
+//! let doc = Doc::new();
+//! let text = doc.get_or_insert_text("text");
+//!
+//! // restore document state from DB
+//! {
+//!   let db_txn = env.get_reader().unwrap();
+//!   let db = LmdbStore::from(db_txn.bind(&h));
+//!   db.load_doc("my-doc-name", &mut doc.transact_mut()).unwrap();
+//! }
+//!
+//! // another options is to flush document state right away, but
+//! // this requires a read-write transaction
+//! {
+//!   let db_txn = env.new_transaction().unwrap();
+//!   let db = LmdbStore::from(db_txn.bind(&h));
+//!   let doc = db.flush_doc_with("my-doc-name", yrs::Options::default()).unwrap();
+//!   db_txn.commit().unwrap(); // flush may modify internal store state
+//! }
+//!
+//! // configure document to persist every update and
+//! // occassionaly compact them into document state
+//! let sub = {
+//!   let env = env.clone();
+//!   let h = h.clone();
+//!   let options = doc.options().clone();
+//!   doc.observe_update_v1(move |_,e| {
+//!       let db_txn = env.new_transaction().unwrap();
+//!       let db = LmdbStore::from(db_txn.bind(&h));
+//!       let seq_nr = db.push_update("my-doc-name", &e.update).unwrap();
+//!       if seq_nr % 64 == 0 {
+//!           // occassinally merge updates into the document state
+//!           db.flush_doc_with("my-doc-name", options.clone()).unwrap();
+//!       }
+//!       db_txn.commit().unwrap();
+//!   })
+//! };
+//!
+//! text.insert(&mut doc.transact_mut(), 0, "a");
+//! text.insert(&mut doc.transact_mut(), 1, "b");
+//! text.insert(&mut doc.transact_mut(), 2, "c");
+//! ```
+
 use lmdb_rs::core::{CursorIterator, MdbResult};
 use lmdb_rs::{CursorKeyRangeIter, Database, MdbError, ReadonlyTransaction};
 use std::ops::Deref;
@@ -26,6 +89,8 @@ impl<T> OptionalNotFound for MdbResult<T> {
     }
 }
 
+/// Type wrapper around LMDB's [Database] struct. Used to extend LMDB transactions with [DocOps]
+/// methods used for convenience when working with Yrs documents.
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct LmdbStore<'db>(Database<'db>);
