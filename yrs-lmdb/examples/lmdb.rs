@@ -1,8 +1,8 @@
-use lib0::decoding::{Cursor, Read};
 use lmdb_rs::core::DbCreate;
 use lmdb_rs::Environment;
 use std::sync::Arc;
 use std::time::Instant;
+use yrs::encoding::read::{Cursor, Read};
 use yrs::{Doc, Text, Transact};
 use yrs_kvstore::DocOps;
 use yrs_lmdb::LmdbStore;
