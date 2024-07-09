@@ -64,6 +64,8 @@
 use lmdb_rs::core::{CursorIterator, MdbResult};
 use lmdb_rs::{CursorKeyRangeIter, Database, MdbError, ReadonlyTransaction};
 use std::ops::Deref;
+
+pub use yrs_kvstore as store;
 use yrs_kvstore::error::Error;
 use yrs_kvstore::keys::Key;
 use yrs_kvstore::{DocOps, KVEntry, KVStore};

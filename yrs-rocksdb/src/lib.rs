@@ -56,6 +56,8 @@ use rocksdb::{
 use std::ops::Deref;
 use yrs_kvstore::{DocOps, KVEntry, KVStore};
 
+pub use yrs_kvstore as store;
+
 /// Type wrapper around RocksDB [Transaction] struct. Used to extend it with [DocOps]
 /// methods used for convenience when working with Yrs documents.
 #[repr(transparent)]

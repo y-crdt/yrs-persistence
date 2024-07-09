@@ -1,6 +1,6 @@
 [package]
 name = "yrs-rocksdb"
-version = "0.2.0"
+version = "0.3.0"
 description = "Persistence layer over Yrs documents for RocksDB backend"
 license = "MIT"
 authors = ["Bartosz Sypytkowski <b.sypytkowski@gmail.com>"]
@@ -13,11 +13,11 @@ readme = "./README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-yrs-kvstore = {version = "0.2", path = "../yrs-kvstore"}
+yrs-kvstore = { version = "0.3", path = "../yrs-kvstore" }
 rocksdb = { version = "0.21" }
 
 [dev-dependencies]
-yrs = "0.17"
+yrs = "0.19"
 criterion = "0.5"
 rand = "0.7"
 
