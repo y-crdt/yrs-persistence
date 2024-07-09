@@ -332,7 +332,7 @@ where
         let start = Key::from_const([V1, KEYSPACE_OID]);
         let end = Key::from_const([V1, KEYSPACE_DOC]);
         let cursor = self.iter_range(&start, &end)?;
-        Ok(DocsNameIter { cursor, start, end })
+        Ok(DocsNameIter { cursor })
     }
 
     /// Returns an iterator over all metadata entries stored for a given document.
@@ -488,8 +488,6 @@ where
     E: KVEntry,
 {
     cursor: I,
-    start: Key<2>,
-    end: Key<2>,
 }
 
 impl<I, E> Iterator for DocsNameIter<I, E>

@@ -1,9 +1,10 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use lib0::decoding::{Cursor, Read};
-use rand::thread_rng;
-use rocksdb::TransactionDB;
 use std::sync::Arc;
+
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use rocksdb::TransactionDB;
+use yrs::encoding::read::{Cursor, Read};
 use yrs::{uuid_v4, Doc, Text, Transact};
+
 use yrs_kvstore::DocOps;
 use yrs_rocksdb::RocksDBStore;
 
@@ -25,7 +26,7 @@ fn insert_doc(c: &mut Criterion) {
         &(doc, db),
         |b, (doc, db)| {
             b.iter(|| {
-                let name = uuid_v4(&mut thread_rng()).to_string();
+                let name = uuid_v4().to_string();
                 let db_txn = RocksDBStore::from(db.transaction());
                 db_txn.insert_doc(&name, &doc.transact()).unwrap();
                 db_txn.commit().unwrap();
@@ -49,7 +50,7 @@ fn updates(c: &mut Criterion) {
         |b, (doc, text, ops, db)| {
             b.iter(|| {
                 let db = db.clone();
-                let name = uuid_v4(&mut thread_rng()).to_string();
+                let name = uuid_v4().to_string();
                 let _sub = doc.observe_update_v1(move |_, e| {
                     let db_txn = RocksDBStore::from(db.transaction());
                     db_txn.push_update(&name, &e.update).unwrap();

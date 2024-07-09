@@ -1,10 +1,11 @@
+use std::sync::Arc;
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use lib0::decoding::{Cursor, Read};
 use lmdb_rs::core::DbCreate;
 use lmdb_rs::Environment;
-use rand::thread_rng;
-use std::sync::Arc;
+use yrs::encoding::read::{Cursor, Read};
 use yrs::{uuid_v4, Doc, Text, Transact};
+
 use yrs_kvstore::DocOps;
 use yrs_lmdb::LmdbStore;
 
@@ -27,7 +28,7 @@ fn insert_doc(c: &mut Criterion) {
         &(doc, env, handle),
         |b, (doc, env, handle)| {
             b.iter(|| {
-                let name = uuid_v4(&mut thread_rng()).to_string();
+                let name = uuid_v4().to_string();
                 let txn = env.new_transaction().unwrap();
                 let db = LmdbStore::from(txn.bind(&handle));
                 db.insert_doc(&name, &doc.transact()).unwrap();
@@ -54,7 +55,7 @@ fn updates(c: &mut Criterion) {
             b.iter(|| {
                 let env = env.clone();
                 let handle = handle.clone();
-                let name = uuid_v4(&mut thread_rng()).to_string();
+                let name = uuid_v4().to_string();
                 let _sub = doc.observe_update_v1(move |_, e| {
                     let db_txn = env.new_transaction().unwrap();
                     let db = LmdbStore::from(db_txn.bind(&handle));
