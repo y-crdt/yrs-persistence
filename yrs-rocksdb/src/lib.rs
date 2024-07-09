@@ -217,44 +217,21 @@ impl KVEntry for RocksDBEntry {
 mod test {
     use crate::RocksDBStore;
     use rocksdb::TransactionDB;
+    use std::path::Path;
     use std::sync::Arc;
+    use tempdir::TempDir;
     use yrs::{Doc, GetString, ReadTxn, Text, Transact};
     use yrs_kvstore::DocOps;
 
-    struct Cleaner(&'static str);
-
-    impl Cleaner {
-        fn new(dir: &'static str) -> Self {
-            Self::cleanup(dir);
-            Cleaner(dir)
-        }
-
-        fn dir(&self) -> &str {
-            self.0
-        }
-
-        fn cleanup(dir: &str) {
-            if let Err(_) = std::fs::remove_dir_all(dir) {
-                // if dir doesn't exists, ignore
-            }
-        }
-    }
-
-    impl Drop for Cleaner {
-        fn drop(&mut self) {
-            Self::cleanup(self.dir());
-        }
-    }
-
-    fn init_env(dir: &str) -> TransactionDB {
+    fn init_env<P: AsRef<Path>>(dir: P) -> TransactionDB {
         let db = TransactionDB::open_default(dir).unwrap();
         db
     }
 
     #[test]
     fn create_get_remove() {
-        let cleaner = Cleaner::new("rocksdb-create_get_remove");
-        let db = init_env(cleaner.dir());
+        let tmp = TempDir::new("rocksdb-create_get_remove").unwrap();
+        let db = init_env(&tmp);
 
         // insert document
         {
@@ -303,8 +280,8 @@ mod test {
     }
     #[test]
     fn multi_insert() {
-        let cleaner = Cleaner::new("rocksdb-multi_insert");
-        let db = init_env(cleaner.dir());
+        let tmp = TempDir::new("rocksdb-multi_insert").unwrap();
+        let db = init_env(&tmp);
 
         // insert document twice
         {
@@ -339,8 +316,9 @@ mod test {
     #[test]
     fn incremental_updates() {
         const DOC_NAME: &str = "doc";
-        let cleaner = Cleaner::new("rocksdb-incremental_updates");
-        let db = Arc::new(init_env(cleaner.dir()));
+        let tmp = TempDir::new("rocksdb-incremental_updates").unwrap();
+        let db = init_env(&tmp);
+        let db = Arc::new(db);
 
         // store document updates
         {
@@ -386,8 +364,9 @@ mod test {
     #[test]
     fn state_vector_updates_only() {
         const DOC_NAME: &str = "doc";
-        let cleaner = Cleaner::new("rocksdb-state_vector_updates_only");
-        let db = Arc::new(init_env(cleaner.dir()));
+        let tmp = TempDir::new("rocksdb-state_vector_updates_only").unwrap();
+        let db = init_env(&tmp);
+        let db = Arc::new(db);
 
         // store document updates
         {
@@ -417,8 +396,9 @@ mod test {
     #[test]
     fn state_diff_from_updates() {
         const DOC_NAME: &str = "doc";
-        let cleaner = Cleaner::new("rocksdb-state_diff_from_updates");
-        let db = Arc::new(init_env(cleaner.dir()));
+        let tmp = TempDir::new("rocksdb-state_diff_from_updates").unwrap();
+        let db = init_env(&tmp);
+        let db = Arc::new(db);
 
         let (sv, expected) = {
             let doc = Doc::new();
@@ -448,8 +428,9 @@ mod test {
     #[test]
     fn state_diff_from_doc() {
         const DOC_NAME: &str = "doc";
-        let cleaner = Cleaner::new("rocksdb-state_diff_from_doc");
-        let db = init_env(cleaner.dir());
+        let tmp = TempDir::new("rocksdb-state_diff_from_doc").unwrap();
+        let db = init_env(&tmp);
+        let db = Arc::new(db);
 
         let (sv, expected) = {
             let doc = Doc::new();
@@ -476,8 +457,9 @@ mod test {
     #[test]
     fn doc_meta() {
         const DOC_NAME: &str = "doc";
-        let cleaner = Cleaner::new("lmdb-doc_meta");
-        let db = init_env(cleaner.dir());
+        let tmp = TempDir::new("rocksdb-doc_meta").unwrap();
+        let db = init_env(&tmp);
+        let db = Arc::new(db);
 
         let db_txn = RocksDBStore::from(db.transaction());
         let value = db_txn.get_meta(DOC_NAME, "key").unwrap();
@@ -505,8 +487,8 @@ mod test {
 
     #[test]
     fn doc_meta_iter() {
-        let cleaner = Cleaner::new("rocksdb-doc_meta_iter");
-        let db = init_env(cleaner.dir());
+        let tmp = TempDir::new("rocksdb-doc_meta_iter").unwrap();
+        let db = init_env(&tmp);
         let db_txn = RocksDBStore::from(db.transaction());
 
         db_txn.insert_meta("A", "key1", [1].as_ref()).unwrap();
@@ -522,8 +504,9 @@ mod test {
 
     #[test]
     fn doc_iter() {
-        let cleaner = Cleaner::new("rocksdb-doc_iter");
-        let db = Arc::new(init_env(cleaner.dir()));
+        let tmp = TempDir::new("rocksdb-doc_iter").unwrap();
+        let db = init_env(&tmp);
+        let db = Arc::new(db);
 
         // insert metadata
         {

@@ -259,35 +259,12 @@ mod test {
     use crate::{DocOps, LmdbStore};
     use lmdb_rs::core::DbCreate;
     use lmdb_rs::Environment;
+    use std::path::Path;
     use std::sync::Arc;
+    use tempdir::TempDir;
     use yrs::{Doc, GetString, ReadTxn, Text, Transact};
 
-    struct Cleaner(&'static str);
-
-    impl Cleaner {
-        fn new(dir: &'static str) -> Self {
-            Self::cleanup(dir);
-            Cleaner(dir)
-        }
-
-        fn dir(&self) -> &str {
-            self.0
-        }
-
-        fn cleanup(dir: &str) {
-            if let Err(_) = std::fs::remove_dir_all(dir) {
-                // if dir doesn't exists, ignore
-            }
-        }
-    }
-
-    impl Drop for Cleaner {
-        fn drop(&mut self) {
-            Self::cleanup(self.dir());
-        }
-    }
-
-    fn init_env(dir: &str) -> Environment {
+    fn init_env<P: AsRef<Path>>(dir: P) -> Environment {
         let env = Environment::new()
             .autocreate_dir(true)
             .max_dbs(4)
@@ -298,8 +275,8 @@ mod test {
 
     #[test]
     fn create_get_remove() {
-        let cleaner = Cleaner::new("lmdb-create_get_remove");
-        let env = init_env(cleaner.dir());
+        let dir = TempDir::new("lmdb-create_get_remove").unwrap();
+        let env = init_env(&dir);
         let h = env.create_db("yrs", DbCreate).unwrap();
 
         // insert document
@@ -352,8 +329,8 @@ mod test {
     }
     #[test]
     fn multi_insert() {
-        let cleaner = Cleaner::new("lmdb-multi_insert");
-        let env = init_env(cleaner.dir());
+        let dir = TempDir::new("lmdb-multi_insert").unwrap();
+        let env = init_env(&dir);
         let h = env.create_db("yrs", DbCreate).unwrap();
 
         // insert document twice
@@ -392,8 +369,8 @@ mod test {
     #[test]
     fn incremental_updates() {
         const DOC_NAME: &str = "doc";
-        let cleaner = Cleaner::new("lmdb-incremental_updates");
-        let env = init_env(cleaner.dir());
+        let dir = TempDir::new("lmdb-incremental_updates").unwrap();
+        let env = init_env(&dir);
         let h = env.create_db("yrs", DbCreate).unwrap();
         let env = Arc::new(env);
         let h = Arc::new(h);
@@ -446,8 +423,8 @@ mod test {
     #[test]
     fn state_vector_updates_only() {
         const DOC_NAME: &str = "doc";
-        let cleaner = Cleaner::new("lmdb-state_vector_updates_only");
-        let env = init_env(cleaner.dir());
+        let dir = TempDir::new("lmdb-state_vector_updates_only").unwrap();
+        let env = init_env(&dir);
         let h = env.create_db("yrs", DbCreate).unwrap();
         let env = Arc::new(env);
         let h = Arc::new(h);
@@ -483,8 +460,8 @@ mod test {
     #[test]
     fn state_diff_from_updates() {
         const DOC_NAME: &str = "doc";
-        let cleaner = Cleaner::new("lmdb-state_diff_from_updates");
-        let env = init_env(cleaner.dir());
+        let dir = TempDir::new("lmdb-state_diff_from_updates").unwrap();
+        let env = init_env(&dir);
         let h = env.create_db("yrs", DbCreate).unwrap();
         let env = Arc::new(env);
         let h = Arc::new(h);
@@ -520,8 +497,8 @@ mod test {
     #[test]
     fn state_diff_from_doc() {
         const DOC_NAME: &str = "doc";
-        let cleaner = Cleaner::new("lmdb-state_diff_from_doc");
-        let env = init_env(cleaner.dir());
+        let dir = TempDir::new("lmdb-state_diff_from_doc").unwrap();
+        let env = init_env(&dir);
         let h = env.create_db("yrs", DbCreate).unwrap();
 
         let (sv, expected) = {
@@ -551,8 +528,8 @@ mod test {
     #[test]
     fn doc_meta() {
         const DOC_NAME: &str = "doc";
-        let cleaner = Cleaner::new("lmdb-doc_meta");
-        let env = init_env(cleaner.dir());
+        let dir = TempDir::new("lmdb-doc_meta").unwrap();
+        let env = init_env(&dir);
         let h = env.create_db("yrs", DbCreate).unwrap();
 
         let db_txn = env.new_transaction().unwrap();
@@ -582,8 +559,8 @@ mod test {
 
     #[test]
     fn doc_meta_iter() {
-        let cleaner = Cleaner::new("lmdb-doc_meta_iter");
-        let env = init_env(cleaner.dir());
+        let dir = TempDir::new("lmdb-doc_meta_iter").unwrap();
+        let env = init_env(&dir);
         let h = env.create_db("yrs", DbCreate).unwrap();
         let db_txn = env.new_transaction().unwrap();
         let db = LmdbStore::from(db_txn.bind(&h));
@@ -601,8 +578,8 @@ mod test {
 
     #[test]
     fn doc_iter() {
-        let cleaner = Cleaner::new("lmdb-doc_iter");
-        let env = init_env(cleaner.dir());
+        let dir = TempDir::new("lmdb-doc_iter").unwrap();
+        let env = init_env(&dir);
         let h = env.create_db("yrs", DbCreate).unwrap();
         let env = Arc::new(env);
         let h = Arc::new(h);

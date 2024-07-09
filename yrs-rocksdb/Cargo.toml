@@ -14,12 +14,12 @@ readme = "./README.md"
 
 [dependencies]
 yrs-kvstore = { version = "0.3", path = "../yrs-kvstore" }
-rocksdb = { version = "0.21" }
+rocksdb = { version = "0.22" }
 
 [dev-dependencies]
 yrs = "0.19"
 criterion = "0.5"
-rand = "0.7"
+tempdir = "0.3"
 
 [[bench]]
 name = "benches"
