@@ -48,6 +48,8 @@ use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, TransactionMut, Update};
 
+pub use yrs;
+
 /// A trait to be implemented by the specific key-value store transaction equivalent in order to
 /// auto-implement features provided by [DocOps] trait.
 pub trait KVStore<'a> {
