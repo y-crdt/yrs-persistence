@@ -38,6 +38,8 @@
 pub mod error;
 pub mod keys;
 
+pub use yrs;
+
 use crate::error::Error;
 use crate::keys::{
     doc_oid_name, key_doc, key_doc_end, key_doc_start, key_meta, key_meta_end, key_meta_start,
@@ -409,7 +411,7 @@ where
         let doc_key = key_doc(oid);
         if let Some(doc_state) = db.get(&doc_key)? {
             let update = Update::decode_v1(doc_state.as_ref())?;
-            txn.apply_update(update);
+            txn.apply_update(update)?;
             found = true;
         }
     }
@@ -421,7 +423,7 @@ where
         while let Some(e) = iter.next() {
             let value = e.value();
             let update = Update::decode_v1(value)?;
-            txn.apply_update(update);
+            txn.apply_update(update)?;
             update_count += 1;
         }
     }
